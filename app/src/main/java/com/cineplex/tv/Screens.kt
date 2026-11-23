@@ -69,22 +69,22 @@ fun Btn(text: String, modifier: Modifier = Modifier, fr: FocusRequester? = null,
 fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var meta by remember { mutableStateOf<JSONObject?>(null) }
-    var prog by remember { mutableStateOf>>(emptyMap()) }
-    var last by remember { mutableStateOf<Triple<String, Long, Long>?>(null) }
-    var fav by remember { mutableStateOf(false) }
-    var srcs by remember { mutableStateOf<List<Src>>(emptyList()) }
-    var seasons by remember { mutableStateOf<List<Season>>(emptyList()) }
-    var season by remember { mutableIntStateOf(0) }
-    var eps by remember { mutableStateOf<List<Ep>>(emptyList()) }
-    var epsSeason by remember { mutableIntStateOf(-1) }
-    var epsLoaded by remember { mutableStateOf(false) }
-    var loaded by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    var errMsg by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var reload by remember { mutableIntStateOf(0) }
-    var focusDone by remember { mutableStateOf(false) }
+    var meta: JSONObject? by remember { mutableStateOf(null) }
+    var prog: Map<String, Pair<Long, Long>> by remember { mutableStateOf(emptyMap()) }
+    var last: Triple<String, Long, Long>? by remember { mutableStateOf(null) }
+    var fav: Boolean by remember { mutableStateOf(false) }
+    var srcs: List<Src> by remember { mutableStateOf(emptyList()) }
+    var seasons: List<Season> by remember { mutableStateOf(emptyList()) }
+    var season: Int by remember { mutableIntStateOf(0) }
+    var eps: List<Ep> by remember { mutableStateOf(emptyList()) }
+    var epsSeason: Int by remember { mutableIntStateOf(-1) }
+    var epsLoaded: Boolean by remember { mutableStateOf(false) }
+    var loaded: Boolean by remember { mutableStateOf(false) }
+    var failed: Boolean by remember { mutableStateOf(false) }
+    var errMsg: String by remember { mutableStateOf("") }
+    var busy: Boolean by remember { mutableStateOf(false) }
+    var reload: Int by remember { mutableIntStateOf(0) }
+    var focusDone: Boolean by remember { mutableStateOf(false) }
     val playFocus = remember { FocusRequester() }
     val leftScroll = rememberScrollState()
 
@@ -137,7 +137,6 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
         }
     }
 
-    // ---- actions ----
     fun playMovie(resumeAt: Long) {
         scope.launch {
             busy = true
