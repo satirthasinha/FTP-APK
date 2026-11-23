@@ -822,9 +822,10 @@ object Site {
     @Volatile private var dbgPageUrl: String = ""
     @Volatile private var dbgHtml: String = ""
     @Volatile private var dbgLog: String = ""
+    @Volatile private var dbgFound: List<String> = emptyList()
 
     private val DEBUG_KEY_RE = Regex(
-        """(?i)(m3u8|\.mp4|\.mkv|token|expires|signature|md5|secure|fetch\(|ajax|xmlhttprequest|autoplay|hls)"""
+        """(?i)(m3u8|\.mp4|\.mkv|token|expires|signature|md5|secure|fetch\(|ajax|xmlhttprequest|xhrsetup|loadsource|new hls|withcredentials|cookie|referrer)"""
     )
     private val PHP_RE = Regex("""[A-Za-z0-9_./-]+\.php""")
     private val SCRIPT_SRC_RE = Regex("""<script[^>]+src\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -846,10 +847,80 @@ object Site {
         return sb.toString()
     }
 
+    private class UaCase(val name: String, val ua: String?, val referer: String?, val origin: Boolean)
+
+    /** One request with one client identity; reports status, a few headers and the first bytes of the answer. */
+    private fun diag(url: String, uc: UaCase): String {
+        return try {
+            val c = URL(url).openConnection() as HttpURLConnection
+            c.connectTimeout = 6000
+            c.readTimeout = 6000
+            c.instanceFollowRedirects = false
+            if (uc.ua != null) c.setRequestProperty("User-Agent", uc.ua)
+            if (uc.referer != null) c.setRequestProperty("Referer", uc.referer)
+            if (uc.origin) c.setRequestProperty("Origin", BASE)
+            c.setRequestProperty("Accept", "*/*")
+            c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            try {
+                val code = c.responseCode
+                val type = c.contentType ?: "-"
+                val server = c.getHeaderField("Server") ?: "-"
+                val loc = c.getHeaderField("Location")
+                val stream = if (code >= 400) c.errorStream else c.inputStream
+                val body = stream?.use { ins ->
+                    val b = ByteArray(160)
+                    val n = ins.read(b)
+                    if (n > 0) String(b, 0, n, Charsets.ISO_8859_1).replace(Regex("\\s+"), " ") else ""
+                } ?: ""
+                "  [${uc.name}] HTTP $code type=$type server=$server" +
+                    (if (loc != null) " location=$loc" else "") +
+                    (if (body.isNotEmpty()) " body=$body" else "")
+            } finally {
+                c.disconnect()
+            }
+        } catch (e: Exception) {
+            "  [${uc.name}] failed: ${e.javaClass.simpleName} ${e.message}"
+        }
+    }
+
+    /** Asks the server for the same video as different clients, to find out which identity it accepts. */
+    private fun clientMatrix(urls: List<String>, page: String): String {
+        val chromeDesktop = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        val chromeAndroid = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        val cases = listOf(
+            UaCase("app-UA + base referer", UA, "$BASE/", false),
+            UaCase("app-UA, no referer", UA, null, false),
+            UaCase("chrome-desktop + page referer + origin", chromeDesktop, page, true),
+            UaCase("chrome-android + page referer", chromeAndroid, page, false),
+            UaCase("vlc", "VLC/3.0.20 LibVLC/3.0.20", null, false)
+        )
+        val sb = StringBuilder()
+        val ch = java.net.CookieHandler.getDefault()
+        val cookies = (ch as? java.net.CookieManager)?.cookieStore?.cookies
+            ?.joinToString { it.name + "@" + it.domain } ?: "-"
+        sb.append("cookies held by the app: ").append(cookies).append('\n')
+        val tests = LinkedHashSet<String>()
+        for (u in urls.take(1)) {
+            tests.add(u)
+            val base = u.substringBefore('?').let { b ->
+                if (b.endsWith("/master.m3u8", true)) b.dropLast("/master.m3u8".length)
+                else if (b.endsWith("/index.m3u8", true)) b.dropLast("/index.m3u8".length)
+                else b
+            }
+            tests.add(base)
+        }
+        for (u in tests) {
+            sb.append("client test: ").append(u).append('\n')
+            for (uc in cases) sb.append(diag(u, uc)).append('\n')
+        }
+        return sb.toString()
+    }
+
     /** Plain-text report of the last episode lookup: what was read, what was found, how the page gets its video. */
     fun debugReport(): String {
         val sb = StringBuilder()
         sb.append(dbgLog).append('\n')
+        if (dbgFound.isNotEmpty()) sb.append(clientMatrix(dbgFound, dbgPageUrl))
         val html = dbgHtml
         if (html.isNotEmpty()) {
             sb.append(digest("page $dbgPageUrl", html, 25))
@@ -942,6 +1013,7 @@ object Site {
         out.addAll(bad)
         if (q.isNotEmpty()) out.add("$BASE/download.php?$q")
         dbgLog = log.toString()
+        dbgFound = found.toList()
         return out.toList()
     }
 
