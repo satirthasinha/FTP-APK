@@ -10,6 +10,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.*
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -223,10 +224,20 @@ private fun PlayerContent(
                     exo.prepare()
                     exo.playWhenReady = true
                 } else {
-                    android.widget.Toast.makeText(
-                        ctx, "Playback error: ${error.errorCodeName}\n$orig",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    val http = generateSequence<Throwable>(error) { it.cause }
+                        .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
+                    val msg = "Playback error: ${error.errorCodeName}\n" +
+                        (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
+                        "Item: $orig"
+                    Log.e("CinePlexPlayer", msg)
+                    val tv = android.widget.TextView(ctx).apply {
+                        text = msg
+                        setTextColor(android.graphics.Color.WHITE)
+                        setBackgroundColor(0xCC000000.toInt())
+                        textSize = 15f
+                        setPadding(32, 24, 32, 24)
+                    }
+                    view.overlayFrameLayout?.apply { removeAllViews(); addView(tv) }
                 }
             }
 
