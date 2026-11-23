@@ -3,6 +3,8 @@ package com.cineplex.tv
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -24,6 +26,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val TAG = "CinePlexPlayer"
@@ -82,6 +85,15 @@ private fun mediaItemFor(url: String, id: String, hls: Boolean): MediaItem =
         .setMediaId(id)
         .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else null)
         .build()
+
+/** Header sets tried in turn: 0 = what the site's own player sends, 1 = Referer is the page itself, 2 = bare. */
+private fun headersFor(profile: Int, page: String): Map<String, String> = when (profile) {
+    0 -> mapOf("Referer" to "$BASE/", "Origin" to BASE, "Accept" to "*/*", "Connection" to "keep-alive")
+    1 -> mapOf("Referer" to (if (page.startsWith("http")) page else "$BASE/"), "Accept" to "*/*")
+    else -> mapOf("Accept" to "*/*")
+}
+
+private class Attempt(val url: String, val profile: Int)
 
 /** What one queue entry resolved to. [index] says which queue entry it belongs to. */
 private class Ready(val index: Int, val urls: List<String>, val hls: Boolean)
@@ -178,7 +190,18 @@ private fun PlayerContent(
     onExit: () -> Unit
 ) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     val urls = ready.urls
+
+    // Every address first with the normal headers; if all fail, the likeliest ones again with other header sets
+    // (some servers guard their files by Referer).
+    val attempts = remember {
+        val l = ArrayList<Attempt>()
+        urls.forEach { l.add(Attempt(it, 0)) }
+        urls.take(3).forEach { l.add(Attempt(it, 1)) }
+        urls.take(3).forEach { l.add(Attempt(it, 2)) }
+        l
+    }
 
     val httpFactory = remember {
         DefaultHttpDataSource.Factory()
@@ -186,14 +209,7 @@ private fun PlayerContent(
             .setConnectTimeoutMs(30000)
             .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(
-                mapOf(
-                    "Referer" to "$BASE/",
-                    "Origin" to BASE,
-                    "Accept" to "*/*",
-                    "Connection" to "keep-alive"
-                )
-            )
+            .setDefaultRequestProperties(headersFor(0, item.key))
     }
 
     val mediaSourceFactory = remember {
@@ -224,10 +240,11 @@ private fun PlayerContent(
             }
     }
 
-    // Index of the candidate address that is playing right now, and a log of the ones that failed.
+    // Index of the attempt that is playing right now, and a log of the ones that failed.
     val attempt = remember { intArrayOf(0) }
     val failures = remember { ArrayList<String>() }
     var errorText by remember { mutableStateOf<String?>(null) }
+    val errorScroll = rememberScrollState()
 
     val view = remember {
         PlayerView(ctx).apply {
@@ -257,39 +274,60 @@ private fun PlayerContent(
 
             override fun onPlayerError(error: PlaybackException) {
                 val n0 = attempt[0]
-                val failedUrl = urls.getOrElse(n0) { "?" }
+                val failed = attempts.getOrNull(n0)
                 val http = generateSequence<Throwable>(error) { it.cause }
                     .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
                     .firstOrNull()
 
-                Log.e(TAG, "ERROR: ${error.errorCodeName} on #${n0 + 1} $failedUrl", error)
+                Log.e(TAG, "ERROR: ${error.errorCodeName} on #${n0 + 1} ${failed?.url}", error)
                 failures.add(
                     "#${n0 + 1} ${error.errorCodeName}" +
                         (if (http != null) "  HTTP ${http.responseCode}" else "") +
-                        "\n     $failedUrl"
+                        "  [headers ${failed?.profile}]\n     ${failed?.url}"
                 )
 
                 val n = n0 + 1
-                if (n < urls.size) {
-                    // Walk through the other addresses before giving up (same for movies and episodes).
+                if (n < attempts.size) {
                     attempt[0] = n
-                    // Some servers reject the Origin / Referer headers; later attempts drop them.
-                    httpFactory.setDefaultRequestProperties(
-                        if (n >= 3) mapOf("Accept" to "*/*")
-                        else mapOf("Referer" to "$BASE/", "Accept" to "*/*")
-                    )
-                    val next = urls[n]
-                    Log.w(TAG, "Trying address ${n + 1}/${urls.size}: $next")
+                    val a = attempts[n]
+                    httpFactory.setDefaultRequestProperties(headersFor(a.profile, item.key))
+                    Log.w(TAG, "Trying attempt ${n + 1}/${attempts.size}: ${a.url} (headers ${a.profile})")
                     val pos = exo.currentPosition
-                    exo.setMediaItem(mediaItemFor(next, item.key, Site.isHlsUrl(next)), pos)
+                    exo.setMediaItem(mediaItemFor(a.url, item.key, Site.isHlsUrl(a.url)), pos)
                     exo.prepare()
                     exo.playWhenReady = true
                 } else {
-                    errorText = "Playback error\n" + item.title +
+                    val base = "Playback error\n" + item.title +
                         "\n\nPage: " + item.key +
-                        "\n\nTried " + urls.size + " address(es):\n" +
+                        "\n\n" + failures.size + " attempt(s) failed:\n" +
                         failures.joinToString("\n") +
                         "\n\nPress Back to return."
+                    errorText = base
+                    if (item.url.isEmpty()) {
+                        // Episode: collect how the page gets its video and copy it, so it can be pasted into the chat.
+                        errorText = base + "\n\nCollecting debug info..."
+                        scope.launch {
+                            val rep = withContext(Dispatchers.IO) {
+                                try {
+                                    Site.debugReport()
+                                } catch (e: Exception) {
+                                    "debug report failed: " + e.message
+                                }
+                            }
+                            val full = base + "\n\n" + rep
+                            val copied = try {
+                                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("CinePlex debug", full))
+                                true
+                            } catch (e: Exception) {
+                                false
+                            }
+                            errorText = base + "\n\n" +
+                                (if (copied) "Debug info copied to the clipboard. Paste it in the chat."
+                                else "Could not copy the debug info.") +
+                                "\n\n" + rep.take(1500)
+                        }
+                    }
                 }
             }
 
@@ -339,10 +377,11 @@ private fun PlayerContent(
             Text(
                 err,
                 color = Color.White,
-                fontSize = 15.sp,
+                fontSize = 13.sp,
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .background(Color(0xCC000000))
+                    .fillMaxSize()
+                    .background(Color(0xE6000000))
+                    .verticalScroll(errorScroll)
                     .padding(24.dp)
             )
         }
