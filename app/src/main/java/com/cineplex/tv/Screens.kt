@@ -37,20 +37,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class QItem(
+    /** Identifies the entry in the progress table: the movie href, or the episode page. */
     val key: String,
+    /** Ready-to-play link. Empty for episodes: the player looks their link up right before they play. */
     val url: String,
     val title: String,
     val titleHref: String,
-    /** Fallback links tried in order if [url] fails (used for episodes). */
-    val alts: List<String> = emptyList()
+    /** Extra links tried in order if [url] fails. */
+    val alts: List<String> = emptyList(),
+    /** Episode only: used to pick the right video when a page lists several. */
+    val season: Int = 0,
+    val epNo: Int = 0
 )
 
 private val SEASON_RE = Regex("season=(\\d+)")
@@ -152,22 +155,14 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
     }
 
     fun playEpisodes(from: Int, resumeAt: Long) {
-        scope.launch {
-            busy = true
-            val chunk = eps.drop(from).take(4)   // this episode + the next 3, so auto-advance works
-            val cands = chunk.map { e ->
-                async { runCatching { app.repo.episodeCandidates(e.page) }.getOrDefault(emptyList()) }
-            }.awaitAll()
-            val q = ArrayList<QItem>()
-            for (i in chunk.indices) {
-                val c = cands[i]
-                // Preserve every remaining episode source so PlayerScreen can retry them.
-                if (c.isNotEmpty()) q.add(QItem(chunk[i].page, c[0], item.title + " " + chunk[i].label, item.href, c.drop(1)))
-            }
-            busy = false
-            if (q.isEmpty()) Toast.makeText(ctx, "Couldn't find the video for this episode", Toast.LENGTH_LONG).show()
-            else onPlay(q, 0, if (chunk.isNotEmpty() && q[0].key == chunk[0].page) resumeAt else 0L)
+        if (from !in eps.indices) return
+        // Same idea as movies: the video link is looked up fresh, right before each episode plays
+        // (the links are signed and short-lived). The whole rest of the season is queued, so the
+        // next episode starts by itself when one ends.
+        val q = eps.drop(from).map { e ->
+            QItem(e.page, "", item.title + " " + e.label, item.href, emptyList(), e.season, e.epNo)
         }
+        onPlay(q, 0, resumeAt)
     }
 
     // Series: work out what "Play" should do (resume / next episode / first episode).
