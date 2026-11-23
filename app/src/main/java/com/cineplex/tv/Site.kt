@@ -3,6 +3,8 @@ package com.cineplex.tv
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
 
@@ -50,6 +52,9 @@ class SeriesInfo(
     val defaultSeason: Int,
     val episodes: List<Ep>
 )
+
+/** What a URL really serves: an HLS playlist, a plain media file, an error / HTML page, or "could not tell". */
+enum class Probe { HLS, FILE, BAD, UNKNOWN }
 
 object Site {
 
@@ -678,17 +683,192 @@ object Site {
     }
 
 
-    /** Episodes use the same lookup as movies, with the episode's own pages. */
-    fun episodeCandidates(page: String): List<String> {
-        val q = page.substringAfter('?', "")
-        val pages = ArrayList<String>()
-        if (q.isNotEmpty()) pages.add("$BASE/player.php?$q")
-        pages.add(page)
-        val epIds = Regex("(?:^|&)(?!series_id=)[a-z_]*=(\\d+)", RegexOption.IGNORE_CASE)
-            .findAll(q).map { it.groupValues[1] }.distinct().toList()
-        for (v in epIds) pages.add("$BASE/player.php?id=$v")
-        val fallback = if (q.isNotEmpty()) "$BASE/download.php?$q" else page
-        return resolve(pages, fallback).map { it.url }
+    private const val UA =
+        "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+    /**
+     * Looks at the first bytes of a URL (following redirects by hand, http<->https included)
+     * and says whether it is an HLS playlist, a real media file, or an HTML/JSON/error page.
+     */
+    fun probe(url: String): Probe {
+        var cur = url
+        return try {
+            for (hop in 0..5) {
+                val c = URL(cur).openConnection() as HttpURLConnection
+                c.connectTimeout = 10000
+                c.readTimeout = 10000
+                c.instanceFollowRedirects = false
+                c.setRequestProperty("User-Agent", UA)
+                c.setRequestProperty("Referer", "$BASE/")
+                c.setRequestProperty("Accept", "*/*")
+                c.setRequestProperty("Range", "bytes=0-1023")
+                try {
+                    val code = c.responseCode
+                    if (code in 300..399) {
+                        val loc = c.getHeaderField("Location") ?: return Probe.BAD
+                        cur = URL(URL(cur), loc).toString()
+                        continue
+                    }
+                    if (code >= 400) return Probe.BAD
+                    val type = (c.contentType ?: "").lowercase()
+                    if (type.contains("mpegurl")) return Probe.HLS
+                    val buf = ByteArray(64)
+                    val n = c.inputStream.use { it.read(buf) }
+                    val head = if (n > 0) {
+                        String(buf, 0, n, Charsets.ISO_8859_1).trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    } else ""
+                    return when {
+                        head.startsWith("#EXTM3U") -> Probe.HLS
+                        type.startsWith("text/html") ||
+                            type.startsWith("application/json") ||
+                            head.startsWith("<") -> Probe.BAD
+                        else -> Probe.FILE
+                    }
+                } finally {
+                    c.disconnect()
+                }
+            }
+            Probe.BAD
+        } catch (e: Exception) {
+            android.util.Log.w("CinePlexSite", "probe failed for $url", e)
+            Probe.UNKNOWN
+        }
+    }
+
+    /** Reads a page as text, but never downloads a video by mistake (checks content type, caps size). */
+    private fun fetchText(url: String, maxBytes: Int = 2_000_000): String? {
+        var cur = url
+        try {
+            for (hop in 0..5) {
+                val c = URL(cur).openConnection() as HttpURLConnection
+                c.connectTimeout = 15000
+                c.readTimeout = 30000
+                c.instanceFollowRedirects = false
+                c.setRequestProperty("User-Agent", UA)
+                c.setRequestProperty("Referer", "$BASE/")
+                c.setRequestProperty("Accept", "text/html,application/json,*/*")
+                try {
+                    val code = c.responseCode
+                    if (code in 300..399) {
+                        val loc = c.getHeaderField("Location") ?: return null
+                        cur = URL(URL(cur), loc).toString()
+                        continue
+                    }
+                    if (code >= 400) return null
+                    val type = (c.contentType ?: "").lowercase()
+                    val isText = type.isEmpty() || type.startsWith("text/") || type.contains("json") ||
+                        type.contains("javascript") || type.contains("xml")
+                    if (!isText) return null   // a video / binary file, not a page
+                    val out = java.io.ByteArrayOutputStream()
+                    val buf = ByteArray(8192)
+                    c.inputStream.use { ins ->
+                        while (out.size() < maxBytes) {
+                            val n = ins.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                        }
+                    }
+                    return out.toString("UTF-8")
+                } finally {
+                    c.disconnect()
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("CinePlexSite", "Could not read $url", e)
+        }
+        return null
+    }
+
+    private fun decodedPath(u: String): String {
+        val raw = u.substringBefore('?').substringBefore('#')
+        return try {
+            URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8")
+        } catch (e: Exception) {
+            raw
+        }
+    }
+
+    private val SXE_RE = Regex("""(?<![a-z0-9])s0*(\d{1,2})[\s._-]*e0*(\d{1,3})(?!\d)""", RegexOption.IGNORE_CASE)
+
+    /**
+     * A page may list the video of every episode (or a "next episodes" sidebar).
+     * Keep only the links that belong to this season/episode, judging by the file name (S01E03, E03, Episode 3).
+     */
+    private fun forEpisode(urls: List<String>, season: Int, epNo: Int): List<String> {
+        if (urls.size < 2 || epNo <= 0) return urls
+        val epRe = Regex("""(?<![a-z0-9])(?:e|ep|episode)[\s._-]*0*$epNo(?!\d)""", RegexOption.IGNORE_CASE)
+
+        fun score(u: String): Int {
+            val path = decodedPath(u)
+            val m = SXE_RE.findAll(path).lastOrNull()
+            if (m != null) {
+                val s = m.groupValues[1].toIntOrNull() ?: -1
+                val e = m.groupValues[2].toIntOrNull() ?: -1
+                return if (e == epNo && (season <= 0 || s == season)) 3 else -1
+            }
+            return if (epRe.containsMatchIn(path)) 2 else 0
+        }
+
+        val scored = urls.map { u -> u to score(u) }
+        val best = scored.maxOf { it.second }
+        if (best > 0) return scored.filter { it.second == best }.map { it.first }
+        // Nothing is labelled with this episode: only drop links that clearly belong to another one.
+        return scored.filter { it.second >= 0 }.map { it.first }.ifEmpty { urls }
+    }
+
+    private val MEDIA_PATH_RE = Regex("\\.(?:$EXT)$", RegexOption.IGNORE_CASE)
+
+    /**
+     * Episode lookup, built the same way as the movie lookup (read the page, follow its player links,
+     * take the video link), plus checks the movie path does not need:
+     *  - only the episode's own page and the matching player page are read (no guessed ids),
+     *  - a page that lists many videos is narrowed down to this episode,
+     *  - every candidate is probed, so HTML / error answers go to the back of the list instead of
+     *    being handed to ExoPlayer first,
+     *  - download.php with the episode's own query stays as the last resort.
+     */
+    fun episodeCandidates(page: String, season0: Int = 0, ep0: Int = 0): List<String> {
+        if (MEDIA_PATH_RE.containsMatchIn(page.substringBefore('?'))) return listOf(page)
+
+        val q = page.substringAfter('?', "").substringBefore('#')
+        val season = if (season0 > 0) season0 else (SEASON_LINK_RE.find("?$q")?.groupValues?.get(1)?.toIntOrNull() ?: 0)
+        val epNo = if (ep0 > 0) ep0 else (EP_PARAM_RE.find("?$q")?.groupValues?.get(1)?.toIntOrNull() ?: 0)
+        val script = page.substringBefore('?').substringAfterLast('/').lowercase()
+
+        val pending = ArrayDeque<String>()
+        pending.addLast(page)
+        if (q.isNotEmpty() && script != "player.php") pending.addLast("$BASE/player.php?$q")
+
+        val visited = HashSet<String>()
+        val found = LinkedHashSet<String>()
+        var inspected = 0
+
+        while (pending.isNotEmpty() && inspected < 10 && found.isEmpty()) {
+            val p = pending.removeFirst()
+            if (!visited.add(p)) continue
+            inspected++
+
+            val html = fetchText(p) ?: continue
+            found.addAll(forEpisode(extractVideoUrls(html), season, epNo))
+            if (found.isNotEmpty()) break
+
+            for (link in innerLinks(html)) {
+                if (link.startsWith(BASE) && !visited.contains(link)) pending.addLast(link)
+            }
+        }
+
+        val good = ArrayList<String>()
+        val bad = ArrayList<String>()
+        for (u in found.take(6)) {
+            if (probe(u) == Probe.BAD) bad.add(u) else good.add(u)
+        }
+
+        val out = LinkedHashSet<String>()
+        out.addAll(good)
+        out.addAll(found.drop(6))
+        if (q.isNotEmpty()) out.add("$BASE/download.php?$q")
+        out.addAll(bad)
+        return out.toList()
     }
 
     /** Opens one episode page and returns its video address. */
