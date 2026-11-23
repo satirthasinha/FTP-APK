@@ -32,7 +32,7 @@ val TV_CATS = listOf(
     "Documentary", "Islamic Series", "Bangla Dubbed",
     "Hindi Dubbed", "Web Series", "Hindi Series",
     "Pakistani Series", "English Series", "Chinese Series",
-    "Korean Series", "Japanese Series", "Others Dubbed Series",
+    "Korean Series", "Japanese Series", "Others Series", "Others Dubbed Series",
     "WWE", "AEW Wrestling", "WWE Wrestling"
 )
 
@@ -56,11 +56,25 @@ object Site {
     private const val EXT = "mkv|mp4|m3u8q|m3u8|avi|mov|webm|m4v"
 
     private val CARD_RE = Regex(
-        "<a\\s+href=\"/?(view|watch|tview)\\.php\\?id=(\\d+)[^\"]*\"[^>]*>([\\s\\S]*?)</a>"
+        "<a\\s[^>]*?href=[\"']/?(view|watch|tview)\\.php\\?id=(\\d+)[^\"']*[\"'][^>]*>([\\s\\S]*?)</a>",
+        RegexOption.IGNORE_CASE
     )
 
-    private val IMG_RE = Regex(
-        "<img[^>]*?src=\"([^\"]+)\"[^>]*?alt=\"([^\"]*)\""
+    private val IMG_TAG_RE = Regex("<img\\b[^>]*>", RegexOption.IGNORE_CASE)
+
+    private fun attr(attrs: String, name: String): String? {
+        val m = Regex(
+            "(?:^|[\\s\"'])" + Regex.escape(name) + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
+            RegexOption.IGNORE_CASE
+        ).find(attrs) ?: return null
+        return m.groupValues[1].ifEmpty { m.groupValues[2] }
+    }
+
+    private val ANCHOR_RE = Regex("<a\\b([^>]*)>([\\s\\S]*?)</a>", RegexOption.IGNORE_CASE)
+
+    private val SOURCE_TAG_RE = Regex(
+        "<(?:source|video)\\b[^>]*?\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']",
+        RegexOption.IGNORE_CASE
     )
 
     private val TAG_RE = Regex("<[^>]+>")
@@ -99,16 +113,8 @@ object Site {
         RegexOption.IGNORE_CASE
     )
 
-    private val EP_CARD_RE = Regex(
-        "<a href=\"([^\"]+)\"[^>]*data-ep=\"(\\d+)\""
-    )
-
     private val EP_TITLE_RE = Regex(
         "font-semibold\">([^<]*)<"
-    )
-
-    private val OPTION_RE = Regex(
-        "<option value=\"(\\d+)\"([^>]*)>([^<]*)</option>"
     )
 
     private val QUALITY_NAME_RE = Regex(
@@ -180,15 +186,18 @@ object Site {
             var poster: String? = null
             var title = ""
 
-            for (im in IMG_RE.findAll(block)) {
-                val src = im.groupValues[1]
+            for (im in IMG_TAG_RE.findAll(block)) {
+                val tag = im.value
+                val src = attr(tag, "src") ?: attr(tag, "data-src") ?: continue
 
                 if (src.contains("IMDB_Logo", ignoreCase = true)) {
                     continue
                 }
 
+                val t = attr(tag, "alt")?.ifBlank { null } ?: attr(tag, "title") ?: ""
+
                 poster = src
-                title = unescape(im.groupValues[2])
+                title = unescape(t)
                 break
             }
 
@@ -284,21 +293,23 @@ object Site {
     }
 
     fun tvList(cat: String?, page: Int): List<Item> {
+        val pageQ = if (page > 1) "&page=$page" else ""
+
         if (cat == null) {
+            // "All TV Series" on the site is tcategory.php with an empty category.
+            val all = try {
+                parseCards(Net.get("$BASE/tcategory.php?category=$pageQ"))
+            } catch (e: Exception) {
+                emptyList()
+            }
+            if (all.isNotEmpty()) return all
+
             return parseCards(
-                Net.get(
-                    "$BASE/tvs.php" +
-                        (if (page > 1) "?page=$page" else "")
-                )
+                Net.get("$BASE/tvs.php" + (if (page > 1) "?page=$page" else ""))
             )
         }
 
-        return parseCards(
-            Net.get(
-                "$BASE/tcategory.php?category=${enc(cat)}" +
-                    (if (page > 1) "&page=$page" else "")
-            )
-        )
+        return parseCards(Net.get("$BASE/tcategory.php?category=${enc(cat)}$pageQ"))
     }
 
     fun search(q: String): List<Item> {
@@ -393,6 +404,11 @@ object Site {
 
         for (m in REL_VIDEO_RE.findAll(html)) {
             out.add(absolute(m.groupValues[1]))
+        }
+
+        for (m in SOURCE_TAG_RE.findAll(html)) {
+            val v = m.groupValues[1].trim()
+            if (!v.startsWith("blob:") && !v.startsWith("data:")) out.add(absolute(v))
         }
 
         val assignment = Regex(
@@ -523,84 +539,75 @@ object Site {
 
     // ───────────── TV series ─────────────
 
-    private fun parseSeasons(
-        html: String
-    ): Pair<List<Season>, Int> {
+    private val SERIES_PAGES = listOf("watch.php", "tview.php")
+    private val seriesPage = HashMap<String, String>()
 
-        val i = html.indexOf("name=\"season\"")
+    private fun idOf(href: String): String =
+        Regex("(?:^|[?&])(?:id|series_id)=(\\d+)").find(href)?.groupValues?.get(1)
+            ?: href.substringAfter("id=", "").substringBefore("&").substringBefore("#")
 
-        if (i < 0) return Pair(emptyList(), 1)
+    private val SEASON_SELECT_RE = Regex(
+        "<select[^>]*(?:name|id)\\s*=\\s*[\"']season[\"'][^>]*>([\\s\\S]*?)</select>",
+        RegexOption.IGNORE_CASE
+    )
+    private val OPTION_TAG_RE = Regex("<option\\b([^>]*)>([^<]*)</option>", RegexOption.IGNORE_CASE)
+    private val SEASON_LINK_RE = Regex("[?&]season=(\\d+)")
+    private val EP_PARAM_RE = Regex("[?&](?:ep|episode|eid|episode_id|e)=(\\d+)", RegexOption.IGNORE_CASE)
 
-        val e = html.indexOf("</select>", i)
-
-        val seg = html.substring(
-            i,
-            if (e < 0) html.length else e
-        )
-
+    private fun parseSeasons(html: String): Pair<List<Season>, Int> {
         val out = ArrayList<Season>()
         var sel = -1
 
-        for (m in OPTION_RE.findAll(seg)) {
-            val n = m.groupValues[1].toIntOrNull() ?: continue
-            val name = unescape(m.groupValues[3]).trim()
-
-            out.add(
-                Season(
-                    n,
-                    if (name.isEmpty()) "Season $n" else name
-                )
-            )
-
-            if (m.groupValues[2].contains("selected")) {
-                sel = n
+        val seg = SEASON_SELECT_RE.find(html)?.groupValues?.get(1)
+        if (seg != null) {
+            for (m in OPTION_TAG_RE.findAll(seg)) {
+                val n = attr(m.groupValues[1], "value")?.toIntOrNull() ?: continue
+                val name = unescape(m.groupValues[2]).trim()
+                out.add(Season(n, if (name.isEmpty()) "Season $n" else name))
+                if (m.groupValues[1].contains("selected", ignoreCase = true)) sel = n
             }
         }
 
-        val def = if (sel >= 0) {
-            sel
-        } else {
-            out.firstOrNull()?.num ?: 1
+        if (out.isEmpty()) {
+            val nums = SEASON_LINK_RE.findAll(unescape(html))
+                .mapNotNull { it.groupValues[1].toIntOrNull() }
+                .toSortedSet()
+            for (n in nums) out.add(Season(n, "Season $n"))
         }
 
+        val def = if (sel >= 0) sel else out.firstOrNull()?.num ?: 1
         return Pair(out, def)
     }
 
-    private fun parseEpisodeList(
-        html: String,
-        season: Int
-    ): List<Ep> {
-
+    private fun parseEpisodeList(html: String, season: Int, seriesId: String): List<Ep> {
         val out = ArrayList<Ep>()
         val seen = HashSet<Int>()
 
-        for (m in EP_CARD_RE.findAll(html)) {
-            val epNo = m.groupValues[2].toInt()
+        for (m in ANCHOR_RE.findAll(html)) {
+            val attrs = m.groupValues[1]
+            val href0 = unescape(attr(attrs, "href") ?: "").trim()
+            val epNo = (attr(attrs, "data-ep") ?: attr(attrs, "data-episode"))?.toIntOrNull()
+                ?: EP_PARAM_RE.find(href0)?.groupValues?.get(1)?.toIntOrNull()
+                ?: continue
 
             if (!seen.add(epNo)) continue
 
             val e = html.indexOf("</li>", m.range.last)
+            val seg = html.substring(m.range.first, if (e < 0) html.length else e)
 
-            val seg = html.substring(
-                m.range.first,
-                if (e < 0) html.length else e
-            )
+            val title = EP_TITLE_RE.find(seg)?.groupValues?.get(1)?.trim()
+                ?: unescape(TAG_RE.replace(m.groupValues[2], " ")).trim().replace(Regex("\\s+"), " ")
 
-            val title = EP_TITLE_RE.find(seg)
-                ?.groupValues
-                ?.get(1)
-                ?.trim() ?: ""
-
-            val page = absolute(
-                unescape(m.groupValues[1]).substringBefore("#")
-            )
+            val page = if (href0.isEmpty() || href0.startsWith("#") || href0.startsWith("javascript", true)) {
+                "$BASE/watch.php?id=$seriesId&season=$season&ep=$epNo"
+            } else {
+                absolute(href0.substringBefore("#"))
+            }
 
             out.add(
                 Ep(
                     page,
-                    unescape(title).ifEmpty {
-                        "Episode $epNo"
-                    },
+                    unescape(title).ifEmpty { "Episode $epNo" },
                     "E$epNo",
                     season,
                     epNo
@@ -612,77 +619,104 @@ object Site {
     }
 
     fun seriesInfo(item: Item): SeriesInfo {
-        val id = item.href.substringAfter("id=")
+        val id = idOf(item.href)
 
         var lastErr: Exception? = null
+        var gotPage = false
 
-        for (p in listOf(
-            "watch.php?id=$id",
-            "watch.php?series_id=$id"
-        )) {
+        val candidates = ArrayList<String>()
+        val known = seriesPage[id]
+        if (known != null) candidates.add("$known?id=$id")
+        for (p in SERIES_PAGES) candidates.add("$p?id=$id")
+        for (p in SERIES_PAGES) candidates.add("$p?series_id=$id")
 
-            val html = try {
+        for (p in candidates.distinct()) {
+            var html = try {
                 Net.get("$BASE/$p")
             } catch (e: Exception) {
                 lastErr = e
                 continue
             }
+            gotPage = true
 
             val parsed = parseSeasons(html)
             val def = parsed.second
-            val eps = parseEpisodeList(html, def)
+            var eps = parseEpisodeList(html, def, id)
+
+            // Page lists seasons but no episodes yet: ask for the default season explicitly.
+            if (eps.isEmpty() && parsed.first.isNotEmpty()) {
+                html = try {
+                    Net.get("$BASE/${p.substringBefore('?')}?id=$id&season=$def")
+                } catch (e: Exception) {
+                    html
+                }
+                eps = parseEpisodeList(html, def, id)
+            }
 
             if (eps.isNotEmpty() || parsed.first.isNotEmpty()) {
+                seriesPage[id] = p.substringBefore('?')
                 val ss = if (parsed.first.isEmpty()) {
                     listOf(Season(def, "Season $def"))
                 } else {
                     parsed.first
                 }
-
                 return SeriesInfo(ss, def, eps)
             }
         }
 
-        if (lastErr != null) throw lastErr
+        val err = lastErr
+        if (!gotPage && err != null) throw err
 
-        return SeriesInfo(
-            emptyList(),
-            1,
-            emptyList()
-        )
+        return SeriesInfo(emptyList(), 1, emptyList())
     }
 
-    fun seasonEpisodes(
-        item: Item,
-        season: Int
-    ): List<Ep> {
+    fun seasonEpisodes(item: Item, season: Int): List<Ep> {
+        val id = idOf(item.href)
+        val pages = (listOfNotNull(seriesPage[id]) + SERIES_PAGES).distinct()
 
-        val id = item.href.substringAfter("id=")
+        for (p in pages) {
+            val html = try {
+                Net.get("$BASE/$p?id=$id&season=$season")
+            } catch (e: Exception) {
+                continue
+            }
+            val eps = parseEpisodeList(html, season, id)
+            if (eps.isNotEmpty()) return eps
+        }
 
-        return parseEpisodeList(
-            Net.get("$BASE/watch.php?id=$id&season=$season"),
-            season
-        )
+        return emptyList()
     }
 
     /** Opens one episode page and returns its video address. */
     fun episodeVideo(page: String): String? {
-        val html = Net.get(page)
+        val visited = HashSet<String>()
 
-        val urls = extractVideoUrls(html)
+        fun scan(url: String, depth: Int): String? {
+            if (depth > 2 || !visited.add(url)) return null
 
-        if (urls.isNotEmpty()) return urls.first()
-
-        for (m in IFRAME_RE.findAll(html)) {
-            val h2 = try {
-                Net.get(absolute(unescape(m.groupValues[1])))
+            val html = try {
+                Net.get(url)
             } catch (e: Exception) {
-                continue
+                return null
             }
 
-            val u = extractVideoUrls(h2)
+            extractVideoUrls(html).firstOrNull()?.let { return it }
 
-            if (u.isNotEmpty()) return u.first()
+            for (link in innerLinks(html)) {
+                scan(link, depth + 1)?.let { return it }
+            }
+
+            return null
+        }
+
+        scan(page, 0)?.let { return it }
+
+        // Same trick as movies: try the player page, then let the server's download endpoint redirect.
+        val q = page.substringAfter('?', "")
+
+        if (q.isNotEmpty()) {
+            scan("$BASE/player.php?$q", 0)?.let { return it }
+            return "$BASE/download.php?$q"
         }
 
         return null
