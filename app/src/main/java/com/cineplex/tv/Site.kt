@@ -109,7 +109,7 @@ object Site {
     )
 
     private val PLAYER_LINK_RE = Regex(
-        "(?:href|src)\\s*=\\s*[\"\']([^\"\']*(?:player|stream|embed|download)\\.php\\?[^\"\']*)[\"\']",
+        "(?:href|src)\\s*=\\s*[\"\']([^\"\']*(?:player|stream|embed|download|watch)\\.php\\?[^\"\']*)[\"\']",
         RegexOption.IGNORE_CASE
     )
 
@@ -296,7 +296,6 @@ object Site {
         val pageQ = if (page > 1) "&page=$page" else ""
 
         if (cat == null) {
-            // "All TV Series" on the site is tcategory.php with an empty category.
             val all = try {
                 parseCards(Net.get("$BASE/tcategory.php?category=$pageQ"))
             } catch (e: Exception) {
@@ -412,7 +411,7 @@ object Site {
         }
 
         val assignment = Regex(
-            "(?:videoSrc|file|source|src)\\s*[:=]\\s*[\"']([^\"']+)[\"']",
+            "(?:videoSrc|file|source|src|streamUrl|playUrl)\\s*[:=]\\s*[\"']([^\"']+)[\"']",
             RegexOption.IGNORE_CASE
         )
 
@@ -423,7 +422,9 @@ object Site {
                 Regex(
                     "\\.(?:$EXT)(?:[?#]|$)",
                     RegexOption.IGNORE_CASE
-                ).containsMatchIn(value)
+                ).containsMatchIn(value) ||
+                value.contains("download.php", ignoreCase = true) ||
+                value.contains("stream.php", ignoreCase = true)
             ) {
                 out.add(absolute(value))
             }
@@ -481,20 +482,19 @@ object Site {
         )
     }
 
-    /** The movie lookup: read the pages in order, stop at the first video link, else use download.php. */
+    /** Shared lookup used by both movies and TV series episodes. */
     private fun resolve(startPages: List<String>, downloadEndpoint: String): List<Src> {
         val found = LinkedHashSet<String>()
         val visited = HashSet<String>()
         val pending = ArrayDeque<String>()
 
-        pending.addAll(startPages)
+        pending.addAll(startPages.map { absolute(it) })
 
         var inspected = 0
 
         while (
             pending.isNotEmpty() &&
-            inspected < 12 &&
-            found.isEmpty()
+            inspected < 12
         ) {
             val page = pending.removeFirst()
 
@@ -511,8 +511,6 @@ object Site {
 
             found.addAll(extractVideoUrls(html))
 
-            if (found.isNotEmpty()) break
-
             for (link in innerLinks(html)) {
                 if (link.startsWith(BASE) && !visited.contains(link)) {
                     pending.addLast(link)
@@ -520,11 +518,14 @@ object Site {
             }
         }
 
-        if (found.isNotEmpty()) {
-            return found.map { url -> Src(url, labelFor(url)) }
+        val out = ArrayList<Src>()
+        for (url in found) {
+            out.add(Src(url, labelFor(url)))
         }
-
-        return listOf(Src(downloadEndpoint, "Server stream"))
+        if (out.none { it.url == downloadEndpoint }) {
+            out.add(Src(downloadEndpoint, "Server stream"))
+        }
+        return out
     }
 
     // ───────────── TV series ─────────────
@@ -542,7 +543,7 @@ object Site {
     )
     private val OPTION_TAG_RE = Regex("<option\\b([^>]*)>([^<]*)</option>", RegexOption.IGNORE_CASE)
     private val SEASON_LINK_RE = Regex("[?&]season=(\\d+)")
-    private val EP_PARAM_RE = Regex("[?&](?:ep|episode|eid|episode_id|e)=(\\d+)", RegexOption.IGNORE_CASE)
+    private val EP_PARAM_RE = Regex("[?&](?:ep|episode|eid|episode_id|e|id)=(\\d+)", RegexOption.IGNORE_CASE)
 
     private fun parseSeasons(html: String): Pair<List<Season>, Int> {
         val out = ArrayList<Season>()
@@ -571,7 +572,7 @@ object Site {
 
     private fun parseEpisodeList(html: String, season: Int, seriesId: String): List<Ep> {
         val out = ArrayList<Ep>()
-        val seen = HashSet<Int>()
+        val seen = HashSet<String>()
 
         for (m in ANCHOR_RE.findAll(html)) {
             val attrs = m.groupValues[1]
@@ -579,8 +580,6 @@ object Site {
             val epNo = (attr(attrs, "data-ep") ?: attr(attrs, "data-episode"))?.toIntOrNull()
                 ?: EP_PARAM_RE.find(href0)?.groupValues?.get(1)?.toIntOrNull()
                 ?: continue
-
-            if (!seen.add(epNo)) continue
 
             val e = html.indexOf("</li>", m.range.last)
             val seg = html.substring(m.range.first, if (e < 0) html.length else e)
@@ -593,6 +592,9 @@ object Site {
             } else {
                 absolute(href0.substringBefore("#"))
             }
+
+            val dedupKey = "$season|$epNo|$page"
+            if (!seen.add(dedupKey)) continue
 
             out.add(
                 Ep(
@@ -633,7 +635,6 @@ object Site {
             val def = parsed.second
             var eps = parseEpisodeList(html, def, id)
 
-            // Page lists seasons but no episodes yet: ask for the default season explicitly.
             if (eps.isEmpty() && parsed.first.isNotEmpty()) {
                 html = try {
                     Net.get("$BASE/${p.substringBefore('?')}?series_id=$id&season=$def")
@@ -677,52 +678,36 @@ object Site {
         return emptyList()
     }
 
-
-    /** Episodes use the same lookup as movies, with the episode's own pages. */
+    /** Episodes use the exact same resolution pipeline as movies, with episode query params. */
     fun episodeCandidates(page: String): List<String> {
-        val q = page.substringAfter('?', "")
-        val pages = ArrayList<String>()
-        if (q.isNotEmpty()) pages.add("$BASE/player.php?$q")
-        pages.add(page)
-        val epIds = Regex("(?:^|&)(?!series_id=)[a-z_]*=(\\d+)", RegexOption.IGNORE_CASE)
+        val fullPage = absolute(page)
+        val q = fullPage.substringAfter('?', "")
+        val pages = LinkedHashSet<String>()
+
+        if (q.isNotEmpty()) {
+            pages.add("$BASE/player.php?$q")
+            pages.add("$BASE/watch.php?$q")
+        }
+        pages.add(fullPage)
+
+        val epIds = Regex("(?:^|&)(?!series_id=)(?!season=)[a-z_]*=(\\d+)", RegexOption.IGNORE_CASE)
             .findAll(q).map { it.groupValues[1] }.distinct().toList()
-        for (v in epIds) pages.add("$BASE/player.php?id=$v")
-        val fallback = if (q.isNotEmpty()) "$BASE/download.php?$q" else page
-        return resolve(pages, fallback).map { it.url }
+        for (v in epIds) {
+            pages.add("$BASE/player.php?id=$v")
+        }
+
+        val fallback = if (q.isNotEmpty()) "$BASE/download.php?$q" else "$BASE/download.php"
+        val resolved = resolve(pages.toList(), fallback).map { it.url }.toMutableList()
+
+        // Also include direct id-based download fallback if present
+        for (v in epIds) {
+            val dlById = "$BASE/download.php?id=$v"
+            if (!resolved.contains(dlById)) resolved.add(dlById)
+        }
+
+        return resolved.distinct()
     }
 
     /** Opens one episode page and returns its video address. */
-    fun episodeVideo(page: String): String? {
-        val visited = HashSet<String>()
-
-        fun scan(url: String, depth: Int): String? {
-            if (depth > 2 || !visited.add(url)) return null
-
-            val html = try {
-                Net.get(url)
-            } catch (e: Exception) {
-                return null
-            }
-
-            extractVideoUrls(html).firstOrNull()?.let { return it }
-
-            for (link in innerLinks(html)) {
-                scan(link, depth + 1)?.let { return it }
-            }
-
-            return null
-        }
-
-        scan(page, 0)?.let { return it }
-
-        // Same trick as movies: try the player page, then let the server's download endpoint redirect.
-        val q = page.substringAfter('?', "")
-
-        if (q.isNotEmpty()) {
-            scan("$BASE/player.php?$q", 0)?.let { return it }
-            return "$BASE/download.php?$q"
-        }
-
-        return null
-    }
+    fun episodeVideo(page: String): String? = episodeCandidates(page).firstOrNull()
 }
