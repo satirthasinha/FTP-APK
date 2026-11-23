@@ -23,8 +23,17 @@ val MOVIE_CATS = listOf(
 )
 
 val TV_CATS = listOf(
-    "Animation Series", "Award Shows", "Bangla Series",
-    "Islamic Series", "Web Series", "Documentary", "WWE"
+    "Animation Series", "Bangla Animation", "Hindi Animation",
+    "English Animation", "Others Animation",
+    "Award Shows", "Bangla Shows", "English Shows",
+    "Hindi Shows", "Others Shows",
+    "Bangla Series", "Bangla Tv Series", "Bangla Drama",
+    "Entertainment", "Indian Bangla", "Indian Bangla Drama",
+    "Documentary", "Islamic Series", "Bangla Dubbed",
+    "Hindi Dubbed", "Web Series", "Hindi Series",
+    "Pakistani Series", "English Series", "Chinese Series",
+    "Korean Series", "Japanese Series", "Others Dubbed Series",
+    "WWE", "AEW Wrestling", "WWE Wrestling"
 )
 
 class Src(val url: String, val label: String)
@@ -47,7 +56,7 @@ object Site {
     private const val EXT = "mkv|mp4|m3u8q|m3u8|avi|mov|webm|m4v"
 
     private val CARD_RE = Regex(
-        "<a\\s[^>]*?href=[\"']/?(view|watch|tview)\\.php\\?id=(\\d+)[^\"']*[\"'][^>]*>([\\s\\S]*?)</a>"
+        "<a\\s+href=\"/?(view|watch|tview)\\.php\\?id=(\\d+)[^\"]*\"[^>]*>([\\s\\S]*?)</a>"
     )
 
     private val IMG_RE = Regex(
