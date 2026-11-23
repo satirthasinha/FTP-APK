@@ -241,7 +241,7 @@ suspend fun remoteShelves(app: App): List<Shelf> {
 
 @Composable
 fun Hero(item: Item?, meta: JSONObject?) {
-    Box(Modifier.fillMaxWidth().height(290.dp)) {
+    Box(Modifier.fillMaxWidth().height(165.dp)) {
         val bg = meta?.optString("background").orEmpty()
         if (bg.isNotEmpty()) AsyncImage(
             model = bg, contentDescription = null, contentScale = ContentScale.Crop, alpha = 0.7f,
@@ -257,21 +257,21 @@ fun Hero(item: Item?, meta: JSONObject?) {
                 if (rating.isNotEmpty()) "IMDb $rating" else null
             ).joinToString("   ·   ")
             Column(
-                Modifier.align(Alignment.CenterStart).padding(start = 40.dp, top = 12.dp).widthIn(max = 520.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                Modifier.align(Alignment.CenterStart).padding(start = 40.dp).widthIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
                     if (item.series) "S E R I E S" else "F I L M",
-                    color = ACCENT, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                    color = ACCENT, fontSize = 10.sp, fontWeight = FontWeight.Bold
                 )
                 Text(
-                    item.title, color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold,
+                    item.title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Text(info, color = Color(0xFFD0D0DA), fontSize = 12.sp)
+                Text(
+                    meta?.optString("description").orEmpty(), color = Color(0xFFE6E6EE), fontSize = 12.sp,
                     maxLines = 2, overflow = TextOverflow.Ellipsis
-                )
-                Text(info, color = Color(0xFFD0D0DA), fontSize = 14.sp)
-                Text(
-                    meta?.optString("description").orEmpty(), color = Color(0xFFE6E6EE), fontSize = 14.sp,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis
                 )
             }
         }
