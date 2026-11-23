@@ -70,7 +70,7 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var meta by remember { mutableStateOf<JSONObject?>(null) }
-    var prog by remember { mutableStateOf<Map<String, Pair<Long, Long>>>(emptyMap()) }
+    var prog by remember { mutableStateOf>>(emptyMap()) }
     var last by remember { mutableStateOf<Triple<String, Long, Long>?>(null) }
     var fav by remember { mutableStateOf(false) }
     var srcs by remember { mutableStateOf<List<Src>>(emptyList()) }
@@ -101,7 +101,6 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
             if (item.series) {
                 val info = app.repo.seriesInfo(item)
                 val lp0 = local.third
-                // Open on the season you were last watching.
                 val lpSeason = if (lp0 == null) null else SEASON_RE.find(lp0.first)?.groupValues?.get(1)?.toIntOrNull()
                 val target = if (lpSeason != null && info.seasons.any { s -> s.num == lpSeason }) lpSeason else info.defaultSeason
                 val list = if (target == info.defaultSeason) info.episodes else app.repo.seasonEpisodes(item, target)
@@ -142,27 +141,42 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
     fun playMovie(resumeAt: Long) {
         scope.launch {
             busy = true
-            // The video link is signed and short-lived, so fetch a fresh one right before playing.
             val fresh = runCatching { app.repo.sources(item) }.getOrDefault(srcs)
             busy = false
             val s = fresh.firstOrNull()
             if (s == null) Toast.makeText(ctx, "Couldn't find the video link", Toast.LENGTH_LONG).show()
-            else onPlay(listOf(QItem(item.href, s.url, item.title, item.href)), 0, resumeAt)
+            else onPlay(listOf(QItem(item.href, s.url, item.title, item.href, fresh.drop(1).map { it.url })), 0, resumeAt)
         }
     }
 
     fun playEpisodes(from: Int, resumeAt: Long) {
         scope.launch {
             busy = true
-            val chunk = eps.drop(from).take(4)   // this episode + the next 3, so auto-advance works
+            val chunk = eps.drop(from).take(4)
             val cands = chunk.map { e ->
                 async { runCatching { app.repo.episodeCandidates(e.page) }.getOrDefault(emptyList()) }
             }.awaitAll()
             val q = ArrayList<QItem>()
             for (i in chunk.indices) {
-                val c = cands[i]
-                // Preserve every remaining episode source so PlayerScreen can retry them.
-                if (c.isNotEmpty()) q.add(QItem(chunk[i].page, c[0], item.title + " " + chunk[i].label, item.href, c.drop(1)))
+                val ep = chunk[i]
+                val rawCands = cands[i]
+                val fallbackCands = if (rawCands.isNotEmpty()) {
+                    rawCands
+                } else {
+                    val qPart = Site.absolute(ep.page).substringAfter('?', "")
+                    if (qPart.isNotEmpty()) listOf("$BASE/download.php?$qPart") else emptyList()
+                }
+                if (fallbackCands.isNotEmpty()) {
+                    q.add(
+                        QItem(
+                            ep.page,
+                            fallbackCands[0],
+                            item.title + " " + ep.label,
+                            item.href,
+                            fallbackCands.drop(1)
+                        )
+                    )
+                }
             }
             busy = false
             if (q.isEmpty()) Toast.makeText(ctx, "Couldn't find the video for this episode", Toast.LENGTH_LONG).show()
@@ -170,7 +184,6 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
         }
     }
 
-    // Series: work out what "Play" should do (resume / next episode / first episode).
     val lp = last
     var nextIdx = 0
     var resumeEp = 0L
@@ -206,7 +219,6 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
             alpha = 0.28f, modifier = Modifier.fillMaxSize()
         )
         Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp), horizontalArrangement = Arrangement.spacedBy(40.dp)) {
-            // Left column scrolls, and the buttons sit right under the title so they are always visible.
             Column(
                 Modifier.weight(if (item.series) 0.42f else 0.7f).verticalScroll(leftScroll),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
