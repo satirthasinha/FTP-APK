@@ -1,4 +1,3 @@
-
 package com.cineplex.tv
 
 import android.util.Log
@@ -44,14 +43,25 @@ private fun sniffHls(url: String): Boolean {
     }
 }
 
+/** "file.mp4/index.m3u8" is just an HLS wrapper of file.mp4; prefer the direct file, which plays fine. */
+private val WRAPPED_RE = Regex("(?i)^(.+\\.(?:mp4|mkv|webm|m4v|mov))/index\\.m3u8$")
+
+private fun direct(url: String): String {
+    val q = url.indexOf('?')
+    val base = if (q >= 0) url.substring(0, q) else url
+    val rest = if (q >= 0) url.substring(q) else ""
+    return WRAPPED_RE.find(base)?.let { it.groupValues[1] + rest } ?: url
+}
+
 @Composable
 fun PlayerScreen(
     app: App,
-    queue: List<QItem>,
+    queue0: List<QItem>,
     start: Int,
     startPos: Long,
     onExit: () -> Unit
 ) {
+    val queue = remember { queue0.map { QItem(it.key, direct(it.url), it.title, it.titleHref) } }
     // Detect HLS by content, not just by URL (e.g. download.php?id=123 has no extension).
     val hls by produceState<Map<String, Boolean>?>(null) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -145,6 +155,8 @@ private fun PlayerContent(
             }
     }
 
+    val attempts = remember { mutableMapOf<String, Int>() }
+
     val view = remember {
         PlayerView(ctx).apply {
             player = exo
@@ -181,16 +193,41 @@ private fun PlayerContent(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(
-                    "CinePlexPlayer",
-                    "ERROR: ${error.errorCodeName}",
-                    error
-                )
-
-                Log.e(
-                    "CinePlexPlayer",
-                    "Message: ${error.message}"
-                )
+                Log.e("CinePlexPlayer", "ERROR: ${error.errorCodeName}", error)
+                val item = exo.currentMediaItem
+                val idx = exo.currentMediaItemIndex
+                val id = item?.mediaId
+                val orig = queue.firstOrNull { it.key == id }?.url
+                if (item == null || id == null || orig == null) return
+                val n = attempts[id] ?: 0
+                // Attempts: 0 original, 1 toggle /index.m3u8, 2 original w/o headers, 3 toggled w/o headers
+                if (n < 3) {
+                    attempts[id] = n + 1
+                    val base = orig.substringBefore('?')
+                    val toggled =
+                        if (base.endsWith("/index.m3u8", true)) base.removeSuffix("/index.m3u8")
+                        else "$base/index.m3u8"
+                    val next = if (n % 2 == 0) toggled else orig
+                    if (n + 1 >= 2) {
+                        httpFactory.setDefaultRequestProperties(mapOf("Accept" to "*/*"))
+                    }
+                    Log.w("CinePlexPlayer", "Retry ${n + 1} with $next")
+                    val hls = Site.isHlsUrl(next)
+                    val pos = exo.currentPosition
+                    exo.replaceMediaItem(
+                        idx,
+                        MediaItem.Builder().setUri(next).setMediaId(id)
+                            .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else null).build()
+                    )
+                    exo.seekTo(idx, pos)
+                    exo.prepare()
+                    exo.playWhenReady = true
+                } else {
+                    android.widget.Toast.makeText(
+                        ctx, "Playback error: ${error.errorCodeName}\n$orig",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
