@@ -14,7 +14,11 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 
 /** Looks at the first bytes of the URL (following redirects) to see whether it is an HLS playlist. */
 private fun sniffHls(url: String): Boolean {
@@ -22,7 +26,7 @@ private fun sniffHls(url: String): Boolean {
     val lower = url.substringBefore('?').lowercase()
     if (listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v").any { lower.endsWith(it) }) return false
     return try {
-        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 15000
         c.readTimeout = 15000
         c.instanceFollowRedirects = true
@@ -76,9 +80,9 @@ fun PlayerScreen(
             QItem(item.key, primary, item.title, item.titleHref, fallbacks)
         }
     }
-    val rawUrls = remember { queue0.associate { it.key to it.url } }
-    val hls by produceState?>(null) {
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    val rawUrls = remember(queue0) { queue0.associate { it.key to it.url } }
+    val hls: Map<String, Boolean>? by produceState(initialValue = null, queue) {
+        value = withContext(Dispatchers.IO) {
             queue.associate { it.key to sniffHls(it.url) }
         }
     }
@@ -98,11 +102,11 @@ private fun PlayerContent(
 ) {
     val ctx = LocalContext.current
 
-    val titleOf = remember {
+    val titleOf = remember(queue) {
         queue.associate { it.key to it.titleHref }
     }
 
-    var curKey by remember {
+    var curKey by remember(queue, start) {
         mutableStateOf(queue[start].key)
     }
 
@@ -213,7 +217,7 @@ private fun PlayerContent(
                 val id = item?.mediaId
                 val qItem = queue.firstOrNull { it.key == id }
                 val orig = qItem?.url
-                if (item == null || id == null || orig == null) return
+                if (item == null || id == null || orig == null || qItem == null) return
                 val n = attempts[id] ?: 0
 
                 fun showError() {
@@ -222,7 +226,7 @@ private fun PlayerContent(
                     val msg = "Playback error: ${error.errorCodeName}\n" +
                         (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
                         "Item: $orig\nPage: $id\nTried: " +
-                        (qItem.alts).joinToString("\n  ", prefix = "\n  ")
+                        qItem.alts.joinToString("\n  ", prefix = "\n  ")
                     Log.e("CinePlexPlayer", msg)
                     val tv = android.widget.TextView(ctx).apply {
                         text = msg
@@ -267,7 +271,6 @@ private fun PlayerContent(
                 }
 
                 val alts = qItem.alts
-                // Build unified retry list: all fallback URLs across 3 header stages (with Origin, Referer only, minimal)
                 val retryPlan = buildList {
                     for (stage in 0..2) {
                         if (stage > 0) add(orig to stage)
@@ -275,7 +278,6 @@ private fun PlayerContent(
                             add(alt to stage)
                         }
                     }
-                    // Also try toggling /index.m3u8 on original/raw URL
                     val base = orig.substringBefore('?')
                     val toggled = if (base.endsWith("/index.m3u8", true)) {
                         base.removeSuffix("/index.m3u8")
