@@ -247,6 +247,7 @@ class Repo(private val db: Db) {
     suspend fun seriesInfo(item: Item): SeriesInfo = io { Site.seriesInfo(item) }
     suspend fun seasonEpisodes(item: Item, season: Int): List<Ep> = io { Site.seasonEpisodes(item, season) }
     suspend fun episodeVideo(page: String): String? = io { Site.episodeVideo(page) }
+    suspend fun episodeCandidates(page: String): List<String> = io { Site.episodeCandidates(page) }
 
     fun clearCache() {
         synchronized(cache) { cache.clear() }
