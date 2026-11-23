@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,10 +61,10 @@ private val SEASON_RE = Regex("season=(\\d+)")
 
 @Composable
 fun Btn(text: String, modifier: Modifier = Modifier, fr: FocusRequester? = null, primary: Boolean = false, onClick: () -> Unit) {
-    FocusBox(modifier, focusRequester = fr, onClick = onClick) {
+    FocusSurface(modifier, focusRequester = fr, shape = RoundedCornerShape(50), onClick = onClick) { _ ->
         Text(
-            text, color = if (primary) Color.Black else Color.White, fontSize = 17.sp, fontWeight = FontWeight.Medium,
-            modifier = Modifier.background(if (primary) Color.White else CARD).padding(horizontal = 22.dp, vertical = 12.dp)
+            text, color = if (primary) Color.Black else Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.background(if (primary) Color.White else SURFACE).padding(horizontal = 26.dp, vertical = 12.dp)
         )
     }
 }

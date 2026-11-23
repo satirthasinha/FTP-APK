@@ -48,12 +48,16 @@ data class Item(
 )
 
 enum class SortBy { ADDED, YEAR, TITLE }
-data class ListFilter(val sort: SortBy = SortBy.ADDED, val quality: String? = null)
+data class ListFilter(val sort: SortBy = SortBy.ADDED, val year: Int = 0, val genre: String = "")
 class Resume(val item: Item, val pos: Long, val dur: Long)
 
-fun applyFilter(list: List<Item>, f: ListFilter): List<Item> {
+/** [genres] maps an item href to its genres (loaded in the background from Cinemeta). */
+fun applyFilter(list: List<Item>, f: ListFilter, genres: Map<String, List<String>> = emptyMap()): List<Item> {
     var r = list
-    if (f.quality != null) r = r.filter { x -> x.quality == f.quality }
+    if (f.year > 0) r = r.filter { x -> x.year == f.year }
+    if (f.genre.isNotEmpty()) {
+        r = r.filter { x -> genres[x.href]?.any { g -> g.equals(f.genre, ignoreCase = true) } == true }
+    }
     return when (f.sort) {
         SortBy.ADDED -> r
         SortBy.YEAR -> r.sortedByDescending { x -> x.year }

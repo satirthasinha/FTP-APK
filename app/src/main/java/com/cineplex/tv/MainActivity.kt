@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -24,6 +25,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
@@ -47,7 +51,8 @@ fun Root(app: App) {
     var section by rememberSaveable { mutableStateOf("home") }
     var query by rememberSaveable { mutableStateOf("") }
     var sortName by rememberSaveable { mutableStateOf(SortBy.ADDED.name) }
-    var quality by rememberSaveable { mutableStateOf("") }
+    var year by rememberSaveable { mutableIntStateOf(0) }
+    var genre by rememberSaveable { mutableStateOf("") }
     var movieCat by rememberSaveable { mutableStateOf("") }
     var tvCat by rememberSaveable { mutableStateOf("") }
     var maxPages by rememberSaveable { mutableIntStateOf(4) }
@@ -57,10 +62,13 @@ fun Root(app: App) {
     var shelves by remember { mutableStateOf<List<Shelf>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var endReached by remember { mutableStateOf(false) }
+    var loadedPages by remember { mutableIntStateOf(0) }
+    val genreMap = remember { mutableStateMapOf<String, List<String>>() }
     val gridState = rememberLazyGridState()
     val sections = remember { sectionsList() }
     val homeVisible = stack.isEmpty()
-    val filter = ListFilter(SortBy.valueOf(sortName), quality.ifEmpty { null })
+    val filter = ListFilter(SortBy.valueOf(sortName), year, genre)
     val curKey = when (section) {
         "movies" -> "movies|$movieCat"
         "tv" -> "tv|$tvCat"
@@ -103,11 +111,24 @@ fun Root(app: App) {
                 loading = false
             }
         } else if (section == "movies" || section == "tv") {
-            loading = true
             val cat = if (section == "movies") movieCat else tvCat
+            val seed = itemsKey == curKey && items.isNotEmpty()
+            // Same list, pages already loaded (e.g. back from a details page): nothing to do.
+            if (seed && loadedPages >= maxPages) {
+                loading = false
+                return@LaunchedEffect
+            }
+            loading = true
             val acc = ArrayList<Item>()
             val seen = HashSet<String>()
-            var p = 1
+            if (seed) {
+                acc.addAll(items)
+                acc.forEach { x -> seen.add(x.href) }
+            } else {
+                endReached = false
+                loadedPages = 0
+            }
+            var p = loadedPages + 1
             while (p <= maxPages) {
                 val page: List<Item>? = try {
                     if (section == "movies") app.repo.movies(cat.ifEmpty { null }, p) else app.repo.tv(cat.ifEmpty { null }, p)
@@ -127,11 +148,34 @@ fun Root(app: App) {
                 }
                 items = ArrayList(acc)
                 itemsKey = curKey
+                loadedPages = p
                 loading = false
-                if (added == 0) break
+                if (added == 0) {
+                    endReached = true
+                    break
+                }
                 p++
             }
             loading = false
+        }
+    }
+
+    // Genre: titles carry no genre on the site, so look it up (cached) and filter once known.
+    LaunchedEffect(genre, items.size, section) {
+        if (genre.isEmpty() || (section != "movies" && section != "tv")) return@LaunchedEffect
+        val todo = items.filter { x -> x.href !in genreMap }
+        for (chunk in todo.chunked(6)) {
+            val res = coroutineScope {
+                chunk.map { x ->
+                    async(Dispatchers.IO) {
+                        val m = Meta.get(app.db, x)
+                        val arr = m?.optJSONArray("genres") ?: m?.optJSONArray("genre")
+                        val g = if (arr == null) emptyList() else (0 until arr.length()).map { i -> arr.getString(i) }
+                        x.href to g
+                    }
+                }.awaitAll()
+            }
+            for (r in res) genreMap[r.first] = r.second
         }
     }
     LaunchedEffect(curKey) { gridState.scrollToItem(0) }
@@ -157,7 +201,7 @@ fun Root(app: App) {
                     val label = sections.firstOrNull { x -> x.id == section }?.label ?: ""
                     GridScreen(
                         app, label,
-                        if (isList) applyFilter(shown, filter) else shown,
+                        if (isList) applyFilter(shown, filter, genreMap) else shown,
                         loading, gridState,
                         cats = if (section == "movies") MOVIE_CATS else if (section == "tv") TV_CATS else null,
                         cat = if (section == "movies") movieCat else tvCat,
@@ -168,11 +212,15 @@ fun Root(app: App) {
                         filter = if (isList) filter else null,
                         onFilter = { f ->
                             sortName = f.sort.name
-                            quality = f.quality ?: ""
+                            year = f.year
+                            genre = f.genre
                         },
                         query = if (section == "search") query else null,
                         onQuery = { q -> query = q },
-                        onMore = if (isList) ({ maxPages += 4 }) else null,
+                        onMore = if (isList && !endReached && maxPages < 40 && shown.isNotEmpty()) ({ maxPages += 4 }) else null,
+                        progressText = if (isList && genre.isNotEmpty() && shown.any { x -> x.href !in genreMap })
+                            "Finding " + genre + " titles…  " + shown.count { x -> x.href in genreMap } + " / " + shown.size + " checked"
+                        else null,
                         errorText = error,
                         emptyText = when (section) {
                             "fav" -> "Your list is empty. Open a title and choose Add to My List."
@@ -183,7 +231,7 @@ fun Root(app: App) {
                     )
                 }
             }
-            Rail(sections, section, { id -> section = id }, Modifier.align(Alignment.CenterStart))
+            Rail(sections, section, { id -> if (id != section) maxPages = 4; section = id }, Modifier.align(Alignment.CenterStart))
         }
     } else if (s is Screen.Detail) {
         DetailScreen(
