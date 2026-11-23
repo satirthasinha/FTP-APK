@@ -111,17 +111,22 @@ private fun uaFor(profile: Int): String = when (profile) {
     else -> USER_AGENT
 }
 
-private class Attempt(val url: String, val profile: Int)
+private class Attempt(
+    val url: String,
+    val profile: Int,
+    val headers: Map<String, String>? = null,
+    val ua: String? = null
+)
 
 /** What one queue entry resolved to. [index] says which queue entry it belongs to. */
-private class Ready(val index: Int, val urls: List<String>, val hls: Boolean)
+private class Ready(val index: Int, val urls: List<String>, val hls: Boolean, val hit: SniffHit? = null)
 
 /**
  * Movies arrive with a ready link ([QItem.url]).
  * Episodes arrive with an empty url and are looked up here, right before they play,
  * exactly like a movie is looked up right before it plays (the links are signed and short-lived).
  */
-private fun prepare(item: QItem, index: Int): Ready {
+private fun prepare(item: QItem, index: Int, hit: SniffHit? = null): Ready {
     val base: List<String> =
         if (item.url.isEmpty()) {
             try {
@@ -133,10 +138,11 @@ private fun prepare(item: QItem, index: Int): Ready {
         } else {
             listOf(item.url) + item.alts
         }
-    val urls = playlistFor(base)
+    // The link the site's own player really requested (captured in a WebView) goes first, untouched.
+    val urls = if (hit != null) (listOf(hit.url) + playlistFor(base)).distinct() else playlistFor(base)
     val hls = urls.firstOrNull()?.let { sniffHls(it) } ?: false
     Log.d(TAG, "Prepared ${item.title}: ${urls.size} candidate(s), hls=$hls\n" + urls.joinToString("\n"))
-    return Ready(index, urls, hls)
+    return Ready(index, urls, hls, hit)
 }
 
 @Composable
@@ -161,9 +167,20 @@ fun PlayerScreen(
     val idx = cur
 
     // Resolve the current entry in the background. Restarts whenever the entry changes.
+    val appCtx = LocalContext.current
     val ready by produceState<Ready?>(null, idx) {
         value = null
-        value = withContext(Dispatchers.IO) { prepare(queue[idx], idx) }
+        val q = queue[idx]
+        // Episodes: let the site's own player run in a hidden WebView and copy the request it makes.
+        val hit = if (q.url.isEmpty()) {
+            try {
+                WebSniffer.sniff(appCtx, q.key)
+            } catch (e: Exception) {
+                Log.w(TAG, "Sniff failed", e)
+                null
+            }
+        } else null
+        value = withContext(Dispatchers.IO) { prepare(q, idx, hit) }
     }
 
     val r = ready
@@ -215,6 +232,7 @@ private fun PlayerContent(
     // (some servers guard their files by Referer).
     val attempts = remember {
         val l = ArrayList<Attempt>()
+        ready.hit?.let { l.add(Attempt(it.url, 0, it.headers, it.ua)) }
         urls.forEach { l.add(Attempt(it, 0)) }
         for (profile in 1..4) urls.take(3).forEach { l.add(Attempt(it, profile)) }
         l
@@ -222,11 +240,11 @@ private fun PlayerContent(
 
     val httpFactory = remember {
         DefaultHttpDataSource.Factory()
-            .setUserAgent(USER_AGENT)
+            .setUserAgent(attempts[0].ua ?: USER_AGENT)
             .setConnectTimeoutMs(30000)
             .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(headersFor(0, item.key))
+            .setDefaultRequestProperties(attempts[0].headers ?: headersFor(0, item.key))
     }
 
     val mediaSourceFactory = remember {
@@ -307,8 +325,8 @@ private fun PlayerContent(
                 if (n < attempts.size) {
                     attempt[0] = n
                     val a = attempts[n]
-                    httpFactory.setUserAgent(uaFor(a.profile))
-                    httpFactory.setDefaultRequestProperties(headersFor(a.profile, item.key))
+                    httpFactory.setUserAgent(a.ua ?: uaFor(a.profile))
+                    httpFactory.setDefaultRequestProperties(a.headers ?: headersFor(a.profile, item.key))
                     Log.w(TAG, "Trying attempt ${n + 1}/${attempts.size}: ${a.url} (headers ${a.profile})")
                     val pos = exo.currentPosition
                     exo.setMediaItem(mediaItemFor(a.url, item.key, Site.isHlsUrl(a.url)), pos)
@@ -317,6 +335,7 @@ private fun PlayerContent(
                 } else {
                     val base = "Playback error\n" + item.title +
                         "\n\nPage: " + item.key +
+                        "\n\n" + WebSniffer.lastNote +
                         "\n\n" + failures.size + " attempt(s) failed:\n" +
                         failures.joinToString("\n") +
                         "\n\nPress Back to return."
