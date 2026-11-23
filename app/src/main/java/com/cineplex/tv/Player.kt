@@ -45,7 +45,7 @@ private fun sniffHls(url: String): Boolean {
 }
 
 /** "file.mp4/index.m3u8" is just an HLS wrapper of file.mp4; prefer the direct file, which plays fine. */
-private val WRAPPED_RE = Regex("(?i)^(.+\\.(?:mp4|mkv|webm|m4v|mov))/index\\.m3u8$")
+private val WRAPPED_RE = Regex("(?i)^(.+\\.(?:mp4|mkv|webm|m4v|mov))/(?:index|master)\\.m3u8$")
 
 private fun direct(url: String): String {
     val q = url.indexOf('?')
@@ -63,6 +63,7 @@ fun PlayerScreen(
     onExit: () -> Unit
 ) {
     val queue = remember { queue0.map { QItem(it.key, direct(it.url), it.title, it.titleHref) } }
+    val rawUrls = remember { queue0.associate { it.key to it.url } }
     // Detect HLS by content, not just by URL (e.g. download.php?id=123 has no extension).
     val hls by produceState<Map<String, Boolean>?>(null) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -70,13 +71,14 @@ fun PlayerScreen(
         }
     }
     val map = hls ?: return
-    PlayerContent(app, queue, start, startPos, map, onExit)
+    PlayerContent(app, queue, rawUrls, start, startPos, map, onExit)
 }
 
 @Composable
 private fun PlayerContent(
     app: App,
     queue: List<QItem>,
+    rawUrls: Map<String, String>,
     start: Int,
     startPos: Long,
     hlsMap: Map<String, Boolean>,
@@ -208,7 +210,13 @@ private fun PlayerContent(
                     val toggled =
                         if (base.endsWith("/index.m3u8", true)) base.removeSuffix("/index.m3u8")
                         else "$base/index.m3u8"
-                    val next = if (n % 2 == 0) toggled else orig
+                    val raw = rawUrls[id] ?: orig
+                    // 0: the page's original (HLS) link if we replaced it, 1: toggled, 2: direct again
+                    val next = when (n) {
+                        0 -> if (raw != orig) raw else toggled
+                        1 -> toggled
+                        else -> orig
+                    }
                     if (n + 1 >= 2) {
                         httpFactory.setDefaultRequestProperties(mapOf("Accept" to "*/*"))
                     }
