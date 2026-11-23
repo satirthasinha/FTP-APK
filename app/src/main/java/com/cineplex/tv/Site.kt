@@ -687,6 +687,70 @@ object Site {
         return emptyList()
     }
 
+
+    private val HLS_WRAP_RE = Regex(
+        "(?i)^(https?://[^/]+)/hls/[^/]+/(.+\\.(?:mp4|mkv|webm|m4v|mov))/(?:index|master)\\.m3u8(\\?.*)?$"
+    )
+    private val WRAP_RE = Regex("(?i)^(.+\\.(?:mp4|mkv|webm|m4v|mov))/(?:index|master)\\.m3u8(\\?.*)?$")
+
+    /** For a link like host/hls/tr/<path>/file.mp4/master.m3u8, the plain-file links that may serve the same video. */
+    private fun derivedLinks(u: String): List<String> {
+        val out = ArrayList<String>()
+        WRAP_RE.find(u)?.let { out.add(it.groupValues[1]) }
+        HLS_WRAP_RE.find(u)?.let { out.add(it.groupValues[1] + "/" + it.groupValues[2]) }
+        return out
+    }
+
+    /** Quick check that a link answers with a non-error status (same headers the app uses elsewhere). */
+    private fun probe(url: String): Boolean = try {
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 8000
+        c.readTimeout = 8000
+        c.instanceFollowRedirects = true
+        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        c.setRequestProperty("Referer", "$BASE/")
+        c.setRequestProperty("Range", "bytes=0-1023")
+        try { c.responseCode in 200..399 } finally { c.disconnect() }
+    } catch (e: Exception) {
+        false
+    }
+
+    /**
+     * All links that might play an episode, best first. Like movies, the player page is read first
+     * (the episode page may only hold a restricted /hls/ link that answers 403). Plain files come before
+     * HLS wrappers, and the first link that really answers is moved to the front.
+     */
+    fun episodeCandidates(page: String): List<String> {
+        val found = LinkedHashSet<String>()
+        val visited = HashSet<String>()
+
+        fun scan(url: String, depth: Int) {
+            if (depth > 2 || !visited.add(url)) return
+            val html = try { Net.get(url) } catch (e: Exception) { return }
+            found.addAll(extractVideoUrls(html))
+            for (link in innerLinks(html)) scan(link, depth + 1)
+        }
+
+        val q = page.substringAfter('?', "")
+        if (q.isNotEmpty()) scan("$BASE/player.php?$q", 0)
+        scan(page, 0)
+
+        val all = LinkedHashSet<String>()
+        for (u in found) {
+            all.addAll(derivedLinks(u))
+            all.add(u)
+        }
+        if (q.isNotEmpty()) all.add("$BASE/download.php?$q")
+
+        val ordered = all.sortedBy { if (isHlsUrl(it)) 1 else 0 }
+        var probed = 0
+        for (u in ordered) {
+            if (probed++ >= 8) break
+            if (probe(u)) return listOf(u) + ordered.filter { it != u }
+        }
+        return ordered
+    }
+
     /** Opens one episode page and returns its video address. */
     fun episodeVideo(page: String): String? {
         val visited = HashSet<String>()
