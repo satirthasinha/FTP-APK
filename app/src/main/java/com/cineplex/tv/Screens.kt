@@ -161,7 +161,7 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
             val q = ArrayList<QItem>()
             for (i in chunk.indices) {
                 val c = cands[i]
-                if (c.isNotEmpty()) q.add(QItem(chunk[i].page, c[0], item.title + " " + chunk[i].label, item.href, c.drop(1)))
+                if (c.isNotEmpty()) q.add(QItem(chunk[i].page, c[0], item.title + " " + chunk[i].label, item.href))
             }
             busy = false
             if (q.isEmpty()) Toast.makeText(ctx, "Couldn't find the video for this episode", Toast.LENGTH_LONG).show()
