@@ -239,7 +239,7 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Btn("Retry") { reload++ }
                         Btn("Open page in browser") {
-                            openInBrowser(ctx, BASE + "/watch.php?id=" + item.href.substringAfter("id="))
+                            openInBrowser(ctx, BASE + "/watch.php?series_id=" + item.href.substringAfter("id="))
                         }
                     }
                 } else if (loaded && !item.series && srcs.isEmpty()) {
