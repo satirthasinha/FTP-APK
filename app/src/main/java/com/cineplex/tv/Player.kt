@@ -2,10 +2,18 @@ package com.cineplex.tv
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.*
 import androidx.media3.datasource.DefaultDataSource
@@ -14,34 +22,24 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
-/** Looks at the first bytes of the URL (following redirects) to see whether it is an HLS playlist. */
+private const val TAG = "CinePlexPlayer"
+
+private const val USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+
+private val MEDIA_EXT = listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v")
+
+/** Decides whether a URL is an HLS playlist, by name first and by content (first bytes) when the name says nothing. */
 private fun sniffHls(url: String): Boolean {
     if (Site.isHlsUrl(url)) return true
     val lower = url.substringBefore('?').lowercase()
-    if (listOf(".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v").any { lower.endsWith(it) }) return false
-    return try {
-        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-        c.connectTimeout = 15000
-        c.readTimeout = 15000
-        c.instanceFollowRedirects = true
-        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
-        c.setRequestProperty("Referer", "$BASE/")
-        c.setRequestProperty("Range", "bytes=0-1023")
-        try {
-            val type = (c.contentType ?: "").lowercase()
-            if (type.contains("mpegurl")) return true
-            val buf = ByteArray(64)
-            val n = c.inputStream.use { it.read(buf) }
-            n > 0 && String(buf, 0, n, Charsets.ISO_8859_1).trimStart('\uFEFF', ' ', '\n', '\r').startsWith("#EXTM3U")
-        } finally {
-            c.disconnect()
-        }
-    } catch (e: Exception) {
-        Log.w("CinePlexPlayer", "HLS sniff failed for $url", e)
-        false
-    }
+    if (MEDIA_EXT.any { lower.endsWith(it) }) return false
+    // e.g. download.php?id=123 has no extension
+    return Site.probe(url) == Probe.HLS
 }
 
 /** "file.mp4/index.m3u8" is just an HLS wrapper of file.mp4; prefer the direct file, which plays fine. */
@@ -54,66 +52,137 @@ private fun direct(url: String): String {
     return WRAPPED_RE.find(base)?.let { it.groupValues[1] + rest } ?: url
 }
 
+/** Adds or removes the "/index.m3u8" wrapper (some links only work in one of the two forms). */
+private fun toggled(url: String): String {
+    val q = url.indexOf('?')
+    val base = if (q >= 0) url.substring(0, q) else url
+    val rest = if (q >= 0) url.substring(q) else ""
+    val suffix = "/index.m3u8"
+    val t = if (base.endsWith(suffix, true)) base.dropLast(suffix.length) else base + suffix
+    return t + rest
+}
+
+/**
+ * Every address worth trying for one item, best first:
+ * the direct media file, then the link as found, then the other candidates, then the toggled HLS wrapper.
+ */
+private fun playlistFor(urls: List<String>): List<String> {
+    val out = LinkedHashSet<String>()
+    for (u in urls) {
+        out.add(direct(u))
+        out.add(u)
+    }
+    urls.firstOrNull()?.let { out.add(toggled(direct(it))) }
+    return out.toList()
+}
+
+private fun mediaItemFor(url: String, id: String, hls: Boolean): MediaItem =
+    MediaItem.Builder()
+        .setUri(url)
+        .setMediaId(id)
+        .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else null)
+        .build()
+
+/** What one queue entry resolved to. [index] says which queue entry it belongs to. */
+private class Ready(val index: Int, val urls: List<String>, val hls: Boolean)
+
+/**
+ * Movies arrive with a ready link ([QItem.url]).
+ * Episodes arrive with an empty url and are looked up here, right before they play,
+ * exactly like a movie is looked up right before it plays (the links are signed and short-lived).
+ */
+private fun prepare(item: QItem, index: Int): Ready {
+    val base: List<String> =
+        if (item.url.isEmpty()) {
+            try {
+                Site.episodeCandidates(item.key, item.season, item.epNo)
+            } catch (e: Exception) {
+                Log.w(TAG, "Episode lookup failed for ${item.key}", e)
+                emptyList()
+            }
+        } else {
+            listOf(item.url) + item.alts
+        }
+    val urls = playlistFor(base)
+    val hls = urls.firstOrNull()?.let { sniffHls(it) } ?: false
+    Log.d(TAG, "Prepared ${item.title}: ${urls.size} candidate(s), hls=$hls\n" + urls.joinToString("\n"))
+    return Ready(index, urls, hls)
+}
+
+@Composable
+private fun Message(text: String) {
+    Box(
+        Modifier.fillMaxSize().background(Color.Black).padding(48.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, color = Color.White, fontSize = 18.sp)
+    }
+}
+
 @Composable
 fun PlayerScreen(
     app: App,
-    queue0: List<QItem>,
+    queue: List<QItem>,
     start: Int,
     startPos: Long,
     onExit: () -> Unit
 ) {
-    // Try the direct media file first (same behavior as working movie playback).
-    // Keep the original wrapped HLS URL and all other episode sources as fallbacks.
-    val queue = remember(queue0) {
-        queue0.map { item ->
-            val primary = direct(item.url)
-            val fallbacks = buildList {
-                if (primary != item.url) add(item.url)
-                item.alts.forEach { alt ->
-                    val directAlt = direct(alt)
-                    add(directAlt)
-                    if (directAlt != alt) add(alt)
-                }
-            }.distinct().filter { it != primary }
-            QItem(item.key, primary, item.title, item.titleHref, fallbacks)
+    var cur by remember { mutableIntStateOf(start.coerceIn(0, queue.lastIndex)) }
+    val idx = cur
+
+    // Resolve the current entry in the background. Restarts whenever the entry changes.
+    val ready by produceState<Ready?>(null, idx) {
+        value = null
+        value = withContext(Dispatchers.IO) { prepare(queue[idx], idx) }
+    }
+
+    val r = ready
+    if (r == null || r.index != idx) {
+        BackHandler { onExit() }
+        Message("Finding video…\n\n" + queue[idx].title)
+    } else if (r.urls.isEmpty()) {
+        BackHandler { onExit() }
+        Message(
+            "Couldn't find the video for\n" + queue[idx].title +
+                "\n\nPage: " + queue[idx].key +
+                "\n\nPress Back to return."
+        )
+    } else {
+        // A fresh player per entry: every episode runs through the same path as a movie.
+        key(idx) {
+            PlayerContent(
+                app = app,
+                item = queue[idx],
+                ready = r,
+                startPos = if (idx == start) startPos else 0L,
+                onEnded = {
+                    if (idx + 1 < queue.size) {
+                        cur = idx + 1
+                    } else {
+                        onExit()
+                    }
+                },
+                onExit = onExit
+            )
         }
     }
-    val rawUrls = remember { queue0.associate { it.key to it.url } }
-    // Detect HLS by content, not just by URL (e.g. download.php?id=123 has no extension).
-    val hls by produceState<Map<String, Boolean>?>(null) {
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            queue.associate { it.key to sniffHls(it.url) }
-        }
-    }
-    val map = hls ?: return
-    PlayerContent(app, queue, rawUrls, start, startPos, map, onExit)
 }
 
 @Composable
 private fun PlayerContent(
     app: App,
-    queue: List<QItem>,
-    rawUrls: Map<String, String>,
-    start: Int,
+    item: QItem,
+    ready: Ready,
     startPos: Long,
-    hlsMap: Map<String, Boolean>,
+    onEnded: () -> Unit,
     onExit: () -> Unit
 ) {
     val ctx = LocalContext.current
-
-    val titleOf = remember {
-        queue.associate { it.key to it.titleHref }
-    }
-
-    var curKey by remember {
-        mutableStateOf(queue[start].key)
-    }
+    val urls = ready.urls
 
     val httpFactory = remember {
         DefaultHttpDataSource.Factory()
-            .setUserAgent(
-                "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
-            )
+            .setUserAgent(USER_AGENT)
             .setConnectTimeoutMs(30000)
             .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
@@ -128,9 +197,7 @@ private fun PlayerContent(
     }
 
     val mediaSourceFactory = remember {
-        DefaultMediaSourceFactory(
-            DefaultDataSource.Factory(ctx, httpFactory)
-        )
+        DefaultMediaSourceFactory(DefaultDataSource.Factory(ctx, httpFactory))
     }
 
     val exo = remember {
@@ -144,36 +211,23 @@ private fun PlayerContent(
                 val subs = app.prefs.subs
 
                 if (subs == "off") {
-                    tp.setIgnoredTextSelectionFlags(
-                        C.SELECTION_FLAG_DEFAULT
-                    )
+                    tp.setIgnoredTextSelectionFlags(C.SELECTION_FLAG_DEFAULT)
                 } else {
                     tp.setPreferredTextLanguage(subs)
                 }
 
                 trackSelectionParameters = tp.build()
 
-                setMediaItems(
-                    queue.map { q ->
-                        MediaItem.Builder()
-                            .setUri(q.url)
-                            .setMediaId(q.key)
-                            // The server uses .m3u8q for an HLS playlist.
-                            .setMimeType(
-                                if (hlsMap[q.key] == true) MimeTypes.APPLICATION_M3U8 else null
-                            )
-                            .build()
-                    },
-                    start,
-                    startPos
-                )
-
+                setMediaItem(mediaItemFor(urls[0], item.key, ready.hls), startPos)
                 prepare()
                 playWhenReady = true
             }
     }
 
-    val attempts = remember { mutableMapOf<String, Int>() }
+    // Index of the candidate address that is playing right now, and a log of the ones that failed.
+    val attempt = remember { intArrayOf(0) }
+    val failures = remember { ArrayList<String>() }
+    var errorText by remember { mutableStateOf<String?>(null) }
 
     val view = remember {
         PlayerView(ctx).apply {
@@ -191,113 +245,62 @@ private fun PlayerContent(
 
         if (dur <= 0 || pos < 10000) return
 
-        val th = titleOf[curKey] ?: curKey
-
         if (pos > dur * 0.95) {
-            app.db.saveProgress(curKey, th, 0, dur)
+            app.db.saveProgress(item.key, item.titleHref, 0, dur)
         } else {
-            app.db.saveProgress(curKey, th, pos, dur)
+            app.db.saveProgress(item.key, item.titleHref, pos, dur)
         }
     }
 
     DisposableEffect(Unit) {
         val listener = object : Player.Listener {
 
-            override fun onMediaItemTransition(
-                mediaItem: MediaItem?,
-                reason: Int
-            ) {
-                curKey = mediaItem?.mediaId ?: curKey
-            }
-
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("CinePlexPlayer", "ERROR: ${error.errorCodeName}", error)
-                val item = exo.currentMediaItem
-                val idx = exo.currentMediaItemIndex
-                val id = item?.mediaId
-                val orig = queue.firstOrNull { it.key == id }?.url
-                if (item == null || id == null || orig == null) return
-                val n = attempts[id] ?: 0
+                val n0 = attempt[0]
+                val failedUrl = urls.getOrElse(n0) { "?" }
+                val http = generateSequence<Throwable>(error) { it.cause }
+                    .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+                    .firstOrNull()
 
-                fun showError() {
-                    val http = generateSequence<Throwable>(error) { it.cause }
-                        .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
-                    val msg = "Playback error: ${error.errorCodeName}\n" +
-                        (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
-                        "Item: $orig\nPage: $id\nTried: " +
-                        (queue.firstOrNull { it.key == id }?.alts ?: emptyList()).joinToString("\n  ", prefix = "\n  ")
-                    Log.e("CinePlexPlayer", msg)
-                    val tv = android.widget.TextView(ctx).apply {
-                        text = msg
-                        setTextColor(android.graphics.Color.WHITE)
-                        setBackgroundColor(0xCC000000.toInt())
-                        textSize = 15f
-                        setPadding(32, 24, 32, 24)
-                    }
-                    view.overlayFrameLayout?.apply { removeAllViews(); addView(tv) }
-                }
+                Log.e(TAG, "ERROR: ${error.errorCodeName} on #${n0 + 1} $failedUrl", error)
+                failures.add(
+                    "#${n0 + 1} ${error.errorCodeName}" +
+                        (if (http != null) "  HTTP ${http.responseCode}" else "") +
+                        "\n     $failedUrl"
+                )
 
-                // Episodes carry a list of fallback links: walk through them before giving up.
-                val alts = queue.firstOrNull { it.key == id }?.alts ?: emptyList()
-                if (alts.isNotEmpty()) {
-                    if (n < alts.size) {
-                        attempts[id] = n + 1
-                        val next = alts[n]
-                        Log.w("CinePlexPlayer", "Episode fallback ${n + 1}/${alts.size}: $next")
-                        // Some servers reject the Origin header; later attempts go without it.
-                        httpFactory.setDefaultRequestProperties(mapOf("Referer" to "$BASE/", "Accept" to "*/*"))
-                        val pos = exo.currentPosition
-                        exo.replaceMediaItem(
-                            idx,
-                            MediaItem.Builder().setUri(next).setMediaId(id)
-                                .setMimeType(if (Site.isHlsUrl(next)) MimeTypes.APPLICATION_M3U8 else null).build()
-                        )
-                        exo.seekTo(idx, pos)
-                        exo.prepare()
-                        exo.playWhenReady = true
-                    } else {
-                        showError()
-                    }
-                    return
-                }
-                // Attempts: 0 original, 1 toggle /index.m3u8, 2 original w/o headers, 3 toggled w/o headers
-                if (n < 3) {
-                    attempts[id] = n + 1
-                    val base = orig.substringBefore('?')
-                    val toggled =
-                        if (base.endsWith("/index.m3u8", true)) base.removeSuffix("/index.m3u8")
-                        else "$base/index.m3u8"
-                    val raw = rawUrls[id] ?: orig
-                    // 0: the page's original (HLS) link if we replaced it, 1: toggled, 2: direct again
-                    val next = when (n) {
-                        0 -> if (raw != orig) raw else toggled
-                        1 -> toggled
-                        else -> orig
-                    }
-                    if (n + 1 >= 2) {
-                        httpFactory.setDefaultRequestProperties(mapOf("Accept" to "*/*"))
-                    }
-                    Log.w("CinePlexPlayer", "Retry ${n + 1} with $next")
-                    val hls = Site.isHlsUrl(next)
-                    val pos = exo.currentPosition
-                    exo.replaceMediaItem(
-                        idx,
-                        MediaItem.Builder().setUri(next).setMediaId(id)
-                            .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else null).build()
+                val n = n0 + 1
+                if (n < urls.size) {
+                    // Walk through the other addresses before giving up (same for movies and episodes).
+                    attempt[0] = n
+                    // Some servers reject the Origin / Referer headers; later attempts drop them.
+                    httpFactory.setDefaultRequestProperties(
+                        if (n >= 3) mapOf("Accept" to "*/*")
+                        else mapOf("Referer" to "$BASE/", "Accept" to "*/*")
                     )
-                    exo.seekTo(idx, pos)
+                    val next = urls[n]
+                    Log.w(TAG, "Trying address ${n + 1}/${urls.size}: $next")
+                    val pos = exo.currentPosition
+                    exo.setMediaItem(mediaItemFor(next, item.key, Site.isHlsUrl(next)), pos)
                     exo.prepare()
                     exo.playWhenReady = true
                 } else {
-                    showError()
+                    errorText = "Playback error\n" + item.title +
+                        "\n\nPage: " + item.key +
+                        "\n\nTried " + urls.size + " address(es):\n" +
+                        failures.joinToString("\n") +
+                        "\n\nPress Back to return."
                 }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
-                Log.d(
-                    "CinePlexPlayer",
-                    "State: $state"
-                )
+                Log.d(TAG, "State: $state")
+                if (state == Player.STATE_ENDED) {
+                    val dur = exo.duration
+                    // Finished: mark as watched, then move on to the next entry (if any).
+                    if (dur > 0) app.db.saveProgress(item.key, item.titleHref, 0, dur)
+                    onEnded()
+                }
             }
         }
 
@@ -326,8 +329,22 @@ private fun PlayerContent(
         }
     }
 
-    AndroidView(
-        factory = { view },
-        modifier = Modifier.fillMaxSize()
-    )
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(
+            factory = { view },
+            modifier = Modifier.fillMaxSize()
+        )
+        val err = errorText
+        if (err != null) {
+            Text(
+                err,
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .background(Color(0xCC000000))
+                    .padding(24.dp)
+            )
+        }
+    }
 }
