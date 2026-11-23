@@ -74,6 +74,7 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
     var epsLoaded by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
+    var errMsg by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
     var focusDone by remember { mutableStateOf(false) }
@@ -107,6 +108,7 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
             }
         } catch (e: Exception) {
             failed = true
+            errMsg = e.message ?: e.javaClass.simpleName
         }
         loaded = true
         meta = Meta.get(app.db, item)
@@ -230,8 +232,16 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
                 }
                 Btn(favLabel) { fav = app.db.toggleFav(item.href) }
                 if (loaded && failed) {
-                    Text("Couldn't reach the server.", color = Color(0xFFFFB4A9), fontSize = 14.sp)
+                    Text("Couldn't reach the server. $errMsg", color = Color(0xFFFFB4A9), fontSize = 14.sp)
                     Btn("Retry") { reload++ }
+                } else if (loaded && item.series && epsLoaded && eps.isEmpty()) {
+                    Text("No episodes could be read from the series page.", color = Color(0xFFFFB4A9), fontSize = 14.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Btn("Retry") { reload++ }
+                        Btn("Open page in browser") {
+                            openInBrowser(ctx, BASE + "/watch.php?id=" + item.href.substringAfter("id="))
+                        }
+                    }
                 } else if (loaded && !item.series && srcs.isEmpty()) {
                     Text("No video link was found on the player page.", color = Color(0xFFFFB4A9), fontSize = 14.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
