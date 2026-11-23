@@ -1,4 +1,3 @@
-
 package com.cineplex.tv
 
 import org.json.JSONArray
@@ -81,12 +80,12 @@ object Site {
     )
 
     private val ABS_VIDEO_RE = Regex(
-        "https?://[^\\s\"'<>()]+?\\.(?:$EXT)(?:/[^\\s\"'<>()?#]*)?(?:\\?[^\\s\"'<>]*)?",
+        "https?://[^\\s\"'<>()]+?\\.(?:$EXT)(?=[/?#\\s\"'<>()]|$)(?:/[^\\s\"'<>()?#]*)?(?:\\?[^\\s\"'<>]*)?",
         RegexOption.IGNORE_CASE
     )
 
     private val REL_VIDEO_RE = Regex(
-        "[\"']([^\"'\\s<>]+?\\.(?:$EXT)(?:/[^\"'\\s<>?#]*)?(?:\\?[^\"'\\s<>]*)?)[\"']",
+        "[\"']([^\"'\\s<>]+?\\.(?:$EXT)(?=[/?#\"'\\s<>]|$)(?:/[^\"'\\s<>?#]*)?(?:\\?[^\"'\\s<>]*)?)[\"']",
         RegexOption.IGNORE_CASE
     )
 
