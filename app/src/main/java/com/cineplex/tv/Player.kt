@@ -1,4 +1,3 @@
-
 package com.cineplex.tv
 
 import android.util.Log
