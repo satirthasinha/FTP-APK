@@ -62,7 +62,7 @@ fun PlayerScreen(
     startPos: Long,
     onExit: () -> Unit
 ) {
-    val queue = remember { queue0.map { QItem(it.key, direct(it.url), it.title, it.titleHref) } }
+    val queue = remember { queue0.map { QItem(it.key, if (it.alts.isEmpty()) direct(it.url) else it.url, it.title, it.titleHref, it.alts) } }
     val rawUrls = remember { queue0.associate { it.key to it.url } }
     // Detect HLS by content, not just by URL (e.g. download.php?id=123 has no extension).
     val hls by produceState<Map<String, Boolean>?>(null) {
@@ -203,6 +203,47 @@ private fun PlayerContent(
                 val orig = queue.firstOrNull { it.key == id }?.url
                 if (item == null || id == null || orig == null) return
                 val n = attempts[id] ?: 0
+
+                fun showError() {
+                    val http = generateSequence<Throwable>(error) { it.cause }
+                        .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
+                    val msg = "Playback error: ${error.errorCodeName}\n" +
+                        (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
+                        "Item: $orig"
+                    Log.e("CinePlexPlayer", msg)
+                    val tv = android.widget.TextView(ctx).apply {
+                        text = msg
+                        setTextColor(android.graphics.Color.WHITE)
+                        setBackgroundColor(0xCC000000.toInt())
+                        textSize = 15f
+                        setPadding(32, 24, 32, 24)
+                    }
+                    view.overlayFrameLayout?.apply { removeAllViews(); addView(tv) }
+                }
+
+                // Episodes carry a list of fallback links: walk through them before giving up.
+                val alts = queue.firstOrNull { it.key == id }?.alts ?: emptyList()
+                if (alts.isNotEmpty()) {
+                    if (n < alts.size) {
+                        attempts[id] = n + 1
+                        val next = alts[n]
+                        Log.w("CinePlexPlayer", "Episode fallback ${n + 1}/${alts.size}: $next")
+                        // Some servers reject the Origin header; later attempts go without it.
+                        httpFactory.setDefaultRequestProperties(mapOf("Referer" to "$BASE/", "Accept" to "*/*"))
+                        val pos = exo.currentPosition
+                        exo.replaceMediaItem(
+                            idx,
+                            MediaItem.Builder().setUri(next).setMediaId(id)
+                                .setMimeType(if (Site.isHlsUrl(next)) MimeTypes.APPLICATION_M3U8 else null).build()
+                        )
+                        exo.seekTo(idx, pos)
+                        exo.prepare()
+                        exo.playWhenReady = true
+                    } else {
+                        showError()
+                    }
+                    return
+                }
                 // Attempts: 0 original, 1 toggle /index.m3u8, 2 original w/o headers, 3 toggled w/o headers
                 if (n < 3) {
                     attempts[id] = n + 1
@@ -232,20 +273,7 @@ private fun PlayerContent(
                     exo.prepare()
                     exo.playWhenReady = true
                 } else {
-                    val http = generateSequence<Throwable>(error) { it.cause }
-                        .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
-                    val msg = "Playback error: ${error.errorCodeName}\n" +
-                        (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
-                        "Item: $orig"
-                    Log.e("CinePlexPlayer", msg)
-                    val tv = android.widget.TextView(ctx).apply {
-                        text = msg
-                        setTextColor(android.graphics.Color.WHITE)
-                        setBackgroundColor(0xCC000000.toInt())
-                        textSize = 15f
-                        setPadding(32, 24, 32, 24)
-                    }
-                    view.overlayFrameLayout?.apply { removeAllViews(); addView(tv) }
+                    showError()
                 }
             }
 
