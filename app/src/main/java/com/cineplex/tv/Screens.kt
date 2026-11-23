@@ -1,4 +1,3 @@
-
 package com.cineplex.tv
 
 import android.content.ActivityNotFoundException
@@ -131,6 +130,7 @@ fun DetailScreen(
                 val info = app.repo.seriesInfo(item)
                 val lp0 = local.third
 
+                // Open on the season you were last watching.
                 val lpSeason =
                     if (lp0 == null) null
                     else SEASON_RE.find(lp0.first)
@@ -210,6 +210,7 @@ fun DetailScreen(
         scope.launch {
             busy = true
 
+            // Fetch a fresh video link immediately before playback.
             val fresh = runCatching {
                 app.repo.sources(item)
             }.getOrDefault(srcs)
@@ -250,7 +251,7 @@ fun DetailScreen(
             // Current episode + next 3 episodes.
             val chunk = eps.drop(from).take(4)
 
-            // Fetch all candidate links for each episode.
+            // Resolve episode video links.
             val cands = chunk.map { e ->
                 async {
                     runCatching {
@@ -262,25 +263,24 @@ fun DetailScreen(
             val q = ArrayList<QItem>()
 
             for (i in chunk.indices) {
-                val candidates = cands[i]
+                val c = cands[i]
 
-                if (candidates.isNotEmpty()) {
-                    val primary = candidates.first()
-
-                    // IMPORTANT:
-                    // Preserve the original URL.
-                    // Do not remove /master.m3u8 or /index.m3u8.
-                    //
-                    // Keep all remaining source URLs as fallbacks.
-                    val alternatives = candidates.drop(1)
-
+                if (c.isNotEmpty()) {
+                    /*
+                     * Keep the first URL unchanged.
+                     * A URL such as:
+                     * file.mp4/master.m3u8
+                     * must remain an HLS URL.
+                     *
+                     * Remaining links are alternative sources.
+                     */
                     q.add(
                         QItem(
                             chunk[i].page,
-                            primary,
+                            c[0],
                             item.title + " " + chunk[i].label,
                             item.href,
-                            alternatives
+                            c.drop(1)
                         )
                     )
                 }
