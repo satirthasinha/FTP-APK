@@ -732,6 +732,11 @@ object Site {
         }
 
         val q = page.substringAfter('?', "")
+        // Movies get their working link from player.php?id=<id>. An episode may have its own id, so try
+        // every numeric id in the episode link (except the series id) the same way.
+        val epIds = Regex("(?:^|&)(?!series_id=)[a-z_]*=(\\d+)", RegexOption.IGNORE_CASE)
+            .findAll(q).map { it.groupValues[1] }.distinct().toList()
+        for (v in epIds) scan("$BASE/player.php?id=$v", 0)
         if (q.isNotEmpty()) scan("$BASE/player.php?$q", 0)
         scan(page, 0)
 
@@ -740,6 +745,7 @@ object Site {
             all.addAll(derivedLinks(u))
             all.add(u)
         }
+        for (v in epIds) all.add("$BASE/download.php?id=$v")
         if (q.isNotEmpty()) all.add("$BASE/download.php?$q")
 
         val ordered = all.sortedBy { if (isHlsUrl(it)) 1 else 0 }
