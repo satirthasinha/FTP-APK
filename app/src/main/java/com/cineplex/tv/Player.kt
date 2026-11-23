@@ -86,11 +86,29 @@ private fun mediaItemFor(url: String, id: String, hls: Boolean): MediaItem =
         .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else null)
         .build()
 
-/** Header sets tried in turn: 0 = what the site's own player sends, 1 = Referer is the page itself, 2 = bare. */
-private fun headersFor(profile: Int, page: String): Map<String, String> = when (profile) {
-    0 -> mapOf("Referer" to "$BASE/", "Origin" to BASE, "Accept" to "*/*", "Connection" to "keep-alive")
-    1 -> mapOf("Referer" to (if (page.startsWith("http")) page else "$BASE/"), "Accept" to "*/*")
-    else -> mapOf("Accept" to "*/*")
+private const val CHROME_DESKTOP_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+private const val VLC_UA = "VLC/3.0.20 LibVLC/3.0.20"
+
+/**
+ * Client identities tried in turn when a server answers 403:
+ * 0 = what the site's own player sends, 1 = Referer is the page itself, 2 = bare headers,
+ * 3 = desktop Chrome (page Referer + Origin), 4 = VLC.
+ */
+private fun headersFor(profile: Int, page: String): Map<String, String> {
+    val pageRef = if (page.startsWith("http")) page else "$BASE/"
+    return when (profile) {
+        0 -> mapOf("Referer" to "$BASE/", "Origin" to BASE, "Accept" to "*/*", "Connection" to "keep-alive")
+        1 -> mapOf("Referer" to pageRef, "Accept" to "*/*")
+        3 -> mapOf("Referer" to pageRef, "Origin" to BASE, "Accept" to "*/*", "Accept-Language" to "en-US,en;q=0.9")
+        else -> mapOf("Accept" to "*/*")
+    }
+}
+
+private fun uaFor(profile: Int): String = when (profile) {
+    3 -> CHROME_DESKTOP_UA
+    4 -> VLC_UA
+    else -> USER_AGENT
 }
 
 private class Attempt(val url: String, val profile: Int)
@@ -198,8 +216,7 @@ private fun PlayerContent(
     val attempts = remember {
         val l = ArrayList<Attempt>()
         urls.forEach { l.add(Attempt(it, 0)) }
-        urls.take(3).forEach { l.add(Attempt(it, 1)) }
-        urls.take(3).forEach { l.add(Attempt(it, 2)) }
+        for (profile in 1..4) urls.take(3).forEach { l.add(Attempt(it, profile)) }
         l
     }
 
@@ -290,6 +307,7 @@ private fun PlayerContent(
                 if (n < attempts.size) {
                     attempt[0] = n
                     val a = attempts[n]
+                    httpFactory.setUserAgent(uaFor(a.profile))
                     httpFactory.setDefaultRequestProperties(headersFor(a.profile, item.key))
                     Log.w(TAG, "Trying attempt ${n + 1}/${attempts.size}: ${a.url} (headers ${a.profile})")
                     val pos = exo.currentPosition
