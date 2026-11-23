@@ -62,8 +62,6 @@ fun PlayerScreen(
     startPos: Long,
     onExit: () -> Unit
 ) {
-    // Try the direct media file first (same behavior as working movie playback).
-    // Keep the original wrapped HLS URL and all other episode sources as fallbacks.
     val queue = remember(queue0) {
         queue0.map { item ->
             val primary = direct(item.url)
@@ -79,8 +77,7 @@ fun PlayerScreen(
         }
     }
     val rawUrls = remember { queue0.associate { it.key to it.url } }
-    // Detect HLS by content, not just by URL (e.g. download.php?id=123 has no extension).
-    val hls by produceState<Map<String, Boolean>?>(null) {
+    val hls by produceState?>(null) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             queue.associate { it.key to sniffHls(it.url) }
         }
@@ -158,7 +155,6 @@ private fun PlayerContent(
                         MediaItem.Builder()
                             .setUri(q.url)
                             .setMediaId(q.key)
-                            // The server uses .m3u8q for an HLS playlist.
                             .setMimeType(
                                 if (hlsMap[q.key] == true) MimeTypes.APPLICATION_M3U8 else null
                             )
@@ -215,7 +211,8 @@ private fun PlayerContent(
                 val item = exo.currentMediaItem
                 val idx = exo.currentMediaItemIndex
                 val id = item?.mediaId
-                val orig = queue.firstOrNull { it.key == id }?.url
+                val qItem = queue.firstOrNull { it.key == id }
+                val orig = qItem?.url
                 if (item == null || id == null || orig == null) return
                 val n = attempts[id] ?: 0
 
@@ -225,7 +222,7 @@ private fun PlayerContent(
                     val msg = "Playback error: ${error.errorCodeName}\n" +
                         (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
                         "Item: $orig\nPage: $id\nTried: " +
-                        (queue.firstOrNull { it.key == id }?.alts ?: emptyList()).joinToString("\n  ", prefix = "\n  ")
+                        (qItem.alts).joinToString("\n  ", prefix = "\n  ")
                     Log.e("CinePlexPlayer", msg)
                     val tv = android.widget.TextView(ctx).apply {
                         text = msg
@@ -237,57 +234,65 @@ private fun PlayerContent(
                     view.overlayFrameLayout?.apply { removeAllViews(); addView(tv) }
                 }
 
-                // Episodes carry a list of fallback links: walk through them before giving up.
-                val alts = queue.firstOrNull { it.key == id }?.alts ?: emptyList()
-                if (alts.isNotEmpty()) {
-                    if (n < alts.size) {
-                        attempts[id] = n + 1
-                        val next = alts[n]
-                        Log.w("CinePlexPlayer", "Episode fallback ${n + 1}/${alts.size}: $next")
-                        // Some servers reject the Origin header; later attempts go without it.
-                        httpFactory.setDefaultRequestProperties(mapOf("Referer" to "$BASE/", "Accept" to "*/*"))
-                        val pos = exo.currentPosition
-                        exo.replaceMediaItem(
-                            idx,
-                            MediaItem.Builder().setUri(next).setMediaId(id)
-                                .setMimeType(if (Site.isHlsUrl(next)) MimeTypes.APPLICATION_M3U8 else null).build()
+                fun playCandidate(nextUrl: String, headerStage: Int) {
+                    when (headerStage) {
+                        0 -> httpFactory.setDefaultRequestProperties(
+                            mapOf(
+                                "Referer" to "$BASE/",
+                                "Origin" to BASE,
+                                "Accept" to "*/*",
+                                "Connection" to "keep-alive"
+                            )
                         )
-                        exo.seekTo(idx, pos)
-                        exo.prepare()
-                        exo.playWhenReady = true
-                    } else {
-                        showError()
+                        1 -> httpFactory.setDefaultRequestProperties(
+                            mapOf("Referer" to "$BASE/", "Accept" to "*/*")
+                        )
+                        else -> httpFactory.setDefaultRequestProperties(
+                            mapOf("Accept" to "*/*")
+                        )
                     }
-                    return
-                }
-                // Attempts: 0 original, 1 toggle /index.m3u8, 2 original w/o headers, 3 toggled w/o headers
-                if (n < 3) {
-                    attempts[id] = n + 1
-                    val base = orig.substringBefore('?')
-                    val toggled =
-                        if (base.endsWith("/index.m3u8", true)) base.removeSuffix("/index.m3u8")
-                        else "$base/index.m3u8"
-                    val raw = rawUrls[id] ?: orig
-                    // 0: the page's original (HLS) link if we replaced it, 1: toggled, 2: direct again
-                    val next = when (n) {
-                        0 -> if (raw != orig) raw else toggled
-                        1 -> toggled
-                        else -> orig
-                    }
-                    if (n + 1 >= 2) {
-                        httpFactory.setDefaultRequestProperties(mapOf("Accept" to "*/*"))
-                    }
-                    Log.w("CinePlexPlayer", "Retry ${n + 1} with $next")
-                    val hls = Site.isHlsUrl(next)
                     val pos = exo.currentPosition
+                    val isHls = Site.isHlsUrl(nextUrl)
                     exo.replaceMediaItem(
                         idx,
-                        MediaItem.Builder().setUri(next).setMediaId(id)
-                            .setMimeType(if (hls) MimeTypes.APPLICATION_M3U8 else null).build()
+                        MediaItem.Builder()
+                            .setUri(nextUrl)
+                            .setMediaId(id)
+                            .setMimeType(if (isHls) MimeTypes.APPLICATION_M3U8 else null)
+                            .build()
                     )
                     exo.seekTo(idx, pos)
                     exo.prepare()
                     exo.playWhenReady = true
+                }
+
+                val alts = qItem.alts
+                // Build unified retry list: all fallback URLs across 3 header stages (with Origin, Referer only, minimal)
+                val retryPlan = buildList {
+                    for (stage in 0..2) {
+                        if (stage > 0) add(orig to stage)
+                        for (alt in alts) {
+                            add(alt to stage)
+                        }
+                    }
+                    // Also try toggling /index.m3u8 on original/raw URL
+                    val base = orig.substringBefore('?')
+                    val toggled = if (base.endsWith("/index.m3u8", true)) {
+                        base.removeSuffix("/index.m3u8")
+                    } else {
+                        "$base/index.m3u8"
+                    }
+                    val raw = rawUrls[id] ?: orig
+                    if (raw != orig) add(raw to 1)
+                    if (toggled != orig) add(toggled to 1)
+                    if (toggled != orig) add(toggled to 2)
+                }.distinct()
+
+                if (n < retryPlan.size) {
+                    val (nextUrl, stage) = retryPlan[n]
+                    attempts[id] = n + 1
+                    Log.w("CinePlexPlayer", "Retry ${n + 1}/${retryPlan.size} (stage=$stage): $nextUrl")
+                    playCandidate(nextUrl, stage)
                 } else {
                     showError()
                 }
