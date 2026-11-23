@@ -4,20 +4,11 @@ package com.cineplex.tv
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
+import androidx.media3.common.*
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -43,19 +34,20 @@ fun PlayerScreen(
         mutableStateOf(queue[start].key)
     }
 
-    val userAgent =
-        "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-
     val httpFactory = remember {
         DefaultHttpDataSource.Factory()
-            .setUserAgent(userAgent)
-            .setConnectTimeoutMs(20000)
+            .setUserAgent(
+                "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+            )
+            .setConnectTimeoutMs(30000)
             .setReadTimeoutMs(30000)
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(
                 mapOf(
                     "Referer" to "$BASE/",
-                    "Accept" to "*/*"
+                    "Origin" to BASE,
+                    "Accept" to "*/*",
+                    "Connection" to "keep-alive"
                 )
             )
     }
@@ -87,10 +79,10 @@ fun PlayerScreen(
                 trackSelectionParameters = tp.build()
 
                 setMediaItems(
-                    queue.map {
+                    queue.map { q ->
                         MediaItem.Builder()
-                            .setUri(it.url)
-                            .setMediaId(it.key)
+                            .setUri(q.url)
+                            .setMediaId(q.key)
                             .build()
                     },
                     start,
@@ -106,8 +98,8 @@ fun PlayerScreen(
         PlayerView(ctx).apply {
             player = exo
             keepScreenOn = true
-            controllerShowTimeoutMs = 4000
             useController = true
+            controllerShowTimeoutMs = 4000
             requestFocus()
         }
     }
@@ -134,30 +126,26 @@ fun PlayerScreen(
                 mediaItem: MediaItem?,
                 reason: Int
             ) {
-                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                    app.db.saveProgress(
-                        curKey,
-                        titleOf[curKey] ?: curKey,
-                        0,
-                        1
-                    )
-                }
-
                 curKey = mediaItem?.mediaId ?: curKey
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(
                     "CinePlexPlayer",
-                    "Playback failed: ${error.errorCodeName}",
+                    "ERROR: ${error.errorCodeName}",
                     error
+                )
+
+                Log.e(
+                    "CinePlexPlayer",
+                    "Message: ${error.message}"
                 )
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 Log.d(
                     "CinePlexPlayer",
-                    "Playback state: $state"
+                    "State: $state"
                 )
             }
         }
@@ -177,11 +165,6 @@ fun PlayerScreen(
             delay(15000)
             save()
         }
-    }
-
-    LaunchedEffect(Unit) {
-        view.isFocusable = true
-        view.requestFocus()
     }
 
     BackHandler {
