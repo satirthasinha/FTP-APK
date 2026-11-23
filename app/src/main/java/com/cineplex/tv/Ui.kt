@@ -2,9 +2,12 @@ package com.cineplex.tv
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -18,7 +21,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 val BG = Color(0xFF0E0E12)
 val CARD = Color(0xFF22222A)
@@ -45,6 +50,20 @@ fun FocusBox(
             .clickable(onClick = onClick),
         content = content
     )
+}
+
+/** On-screen Back button (touch + D-pad). */
+@Composable
+fun BackButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    FocusBox(modifier, onClick = onClick) {
+        Text(
+            "\u2039  Back",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.background(Color(0xCC22222A)).padding(horizontal = 18.dp, vertical = 10.dp)
+        )
+    }
 }
 
 fun fmtTime(ms: Long): String {

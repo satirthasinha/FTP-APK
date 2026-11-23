@@ -11,11 +11,12 @@ import java.net.URLEncoder
 const val BASE = "http://103.136.200.66"
 
 val MOVIE_CATS = listOf(
+    // Bangla related first
+    "Bangla Movies", "Bangla Dubbed", "Indian Bangla",
     "3D Movies", "4K Movies", "Animation", "Anime",
-    "Bangla Dubbed", "Bangla Movies", "Chinese",
-    "Documentaries", "Documentary", "Dual Audio", "English",
+    "Chinese", "Documentaries", "Documentary", "Dual Audio", "English",
     "Exclusive Full HD", "Foreign", "Hindi",
-    "Hindi Dubbed", "Indian Bangla", "Indonesian",
+    "Hindi Dubbed", "Indonesian",
     "Italy Movies", "Japanese", "Kids Cartoon", "Korean",
     "Pakistani", "Punjabi", "Turkey Movies",
     "Hindi Dubbed/Chinees Movies", "Hindi Dubbed/English Movies",
@@ -25,13 +26,15 @@ val MOVIE_CATS = listOf(
 )
 
 val TV_CATS = listOf(
-    "Animation Series", "Bangla Animation", "Hindi Animation",
+    // Bangla related first
+    "Bangla Series", "Bangla Tv Series", "Bangla Drama", "Bangla Animation",
+    "Bangla Shows", "Indian Bangla", "Indian Bangla Drama", "Bangla Dubbed",
+    "Animation Series", "Hindi Animation",
     "English Animation", "Others Animation",
-    "Award Shows", "Bangla Shows", "English Shows",
+    "Award Shows", "English Shows",
     "Hindi Shows", "Others Shows",
-    "Bangla Series", "Bangla Tv Series", "Bangla Drama",
-    "Entertainment", "Indian Bangla", "Indian Bangla Drama",
-    "Documentary", "Islamic Series", "Bangla Dubbed",
+    "Entertainment",
+    "Documentary", "Islamic Series",
     "Hindi Dubbed", "Web Series", "Hindi Series",
     "Pakistani Series", "English Series", "Chinese Series",
     "Korean Series", "Japanese Series", "Others Series", "Others Dubbed Series",

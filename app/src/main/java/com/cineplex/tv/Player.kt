@@ -1,6 +1,7 @@
 package com.cineplex.tv
 
 import android.util.Log
+import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -146,12 +147,13 @@ private fun prepare(item: QItem, index: Int, hit: SniffHit? = null): Ready {
 }
 
 @Composable
-private fun Message(text: String) {
+private fun Message(text: String, onBack: () -> Unit) {
     Box(
         Modifier.fillMaxSize().background(Color.Black).padding(48.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(text, color = Color.White, fontSize = 18.sp)
+        BackButton(Modifier.align(Alignment.TopStart)) { onBack() }
     }
 }
 
@@ -186,14 +188,14 @@ fun PlayerScreen(
     val r = ready
     if (r == null || r.index != idx) {
         BackHandler { onExit() }
-        Message("Finding video…\n\n" + queue[idx].title)
+        Message("Finding video…\n\n" + queue[idx].title) { onExit() }
     } else if (r.urls.isEmpty()) {
         BackHandler { onExit() }
         Message(
             "Couldn't find the video for\n" + queue[idx].title +
                 "\n\nPage: " + queue[idx].key +
                 "\n\nPress Back to return."
-        )
+        ) { onExit() }
     } else {
         // A fresh player per entry: every episode runs through the same path as a movie.
         key(idx) {
@@ -281,8 +283,13 @@ private fun PlayerContent(
     var errorText by remember { mutableStateOf<String?>(null) }
     val errorScroll = rememberScrollState()
 
+    var showBack by remember { mutableStateOf(true) }
+
     val view = remember {
         PlayerView(ctx).apply {
+            setControllerVisibilityListener(
+                PlayerView.ControllerVisibilityListener { v -> showBack = v == View.VISIBLE }
+            )
             player = exo
             keepScreenOn = true
             useController = true
@@ -421,6 +428,10 @@ private fun PlayerContent(
                     .verticalScroll(errorScroll)
                     .padding(24.dp)
             )
+        }
+        // Visible together with the player controls (and always while an error is shown).
+        if (showBack || errorText != null) {
+            BackButton(Modifier.align(Alignment.TopStart).padding(16.dp)) { onExit() }
         }
     }
 }

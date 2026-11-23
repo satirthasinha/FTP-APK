@@ -186,7 +186,11 @@ fun Root(app: App) {
             Rail(sections, section, { id -> section = id }, Modifier.align(Alignment.CenterStart))
         }
     } else if (s is Screen.Detail) {
-        DetailScreen(app, s.item) { q, i, p -> stack.add(Screen.Play(q, i, p)) }
+        DetailScreen(
+            app, s.item,
+            onBack = { stack.removeAt(stack.lastIndex) },
+            onPlay = { q, i, p -> stack.add(Screen.Play(q, i, p)) }
+        )
     } else if (s is Screen.Play) {
         PlayerScreen(app, s.queue, s.start, s.pos) { stack.removeAt(stack.lastIndex) }
     }

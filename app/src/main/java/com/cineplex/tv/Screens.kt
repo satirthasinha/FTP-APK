@@ -69,7 +69,7 @@ fun Btn(text: String, modifier: Modifier = Modifier, fr: FocusRequester? = null,
 }
 
 @Composable
-fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit) {
+fun DetailScreen(app: App, item: Item, onBack: () -> Unit, onPlay: (List<QItem>, Int, Long) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var meta by remember { mutableStateOf<JSONObject?>(null) }
@@ -206,6 +206,7 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
                 Modifier.weight(if (item.series) 0.42f else 0.7f).verticalScroll(leftScroll),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                BackButton(onClick = onBack)
                 Text(item.title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                 Text(info, color = Color.LightGray, fontSize = 15.sp)
                 if (!item.series) {
