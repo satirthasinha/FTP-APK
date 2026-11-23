@@ -690,7 +690,7 @@ object Site {
      * Looks at the first bytes of a URL (following redirects by hand, http<->https included)
      * and says whether it is an HLS playlist, a real media file, or an HTML/JSON/error page.
      */
-    fun probe(url: String): Probe {
+    fun probe(url: String, referer: String = "$BASE/"): Probe {
         var cur = url
         return try {
             for (hop in 0..5) {
@@ -699,7 +699,7 @@ object Site {
                 c.readTimeout = 10000
                 c.instanceFollowRedirects = false
                 c.setRequestProperty("User-Agent", UA)
-                c.setRequestProperty("Referer", "$BASE/")
+                c.setRequestProperty("Referer", referer)
                 c.setRequestProperty("Accept", "*/*")
                 c.setRequestProperty("Range", "bytes=0-1023")
                 try {
@@ -818,6 +818,60 @@ object Site {
 
     private val MEDIA_PATH_RE = Regex("\\.(?:$EXT)$", RegexOption.IGNORE_CASE)
 
+    // ── Debug info about the last episode lookup (the player copies it to the clipboard when playback fails) ──
+    @Volatile private var dbgPageUrl: String = ""
+    @Volatile private var dbgHtml: String = ""
+    @Volatile private var dbgLog: String = ""
+
+    private val DEBUG_KEY_RE = Regex(
+        """(?i)(m3u8|\.mp4|\.mkv|token|expires|signature|md5|secure|fetch\(|ajax|xmlhttprequest|autoplay|hls)"""
+    )
+    private val PHP_RE = Regex("""[A-Za-z0-9_./-]+\.php""")
+    private val SCRIPT_SRC_RE = Regex("""<script[^>]+src\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
+    /** Short excerpts around the interesting words of [text] (video links, tokens, ajax calls ...). */
+    private fun digest(label: String, text: String, maxWindows: Int): String {
+        val sb = StringBuilder("== $label (${text.length} chars)\n")
+        var lastEnd = -1
+        var n = 0
+        for (m in DEBUG_KEY_RE.findAll(text)) {
+            if (m.range.first < lastEnd) continue
+            if (n >= maxWindows) break
+            val a = (m.range.first - 120).coerceAtLeast(0)
+            val b = (m.range.last + 200).coerceAtMost(text.length - 1)
+            sb.append("... ").append(text.substring(a, b + 1).replace(Regex("\\s+"), " ")).append(" ...\n")
+            lastEnd = b
+            n++
+        }
+        return sb.toString()
+    }
+
+    /** Plain-text report of the last episode lookup: what was read, what was found, how the page gets its video. */
+    fun debugReport(): String {
+        val sb = StringBuilder()
+        sb.append(dbgLog).append('\n')
+        val html = dbgHtml
+        if (html.isNotEmpty()) {
+            sb.append(digest("page $dbgPageUrl", html, 25))
+            sb.append("php names in page: ")
+                .append(PHP_RE.findAll(html).map { it.value }.distinct().take(40).joinToString(", "))
+                .append('\n')
+            val srcs = SCRIPT_SRC_RE.findAll(html)
+                .map { absolute(unescape(it.groupValues[1])) }
+                .filter { it.startsWith(BASE) }
+                .distinct().take(4).toList()
+            sb.append("scripts: ").append(srcs.joinToString(", ")).append('\n')
+            for (src in srcs) {
+                val js = fetchText(src, 600_000) ?: continue
+                sb.append(digest("script $src", js, 12))
+                sb.append("php names in script: ")
+                    .append(PHP_RE.findAll(js).map { it.value }.distinct().take(30).joinToString(", "))
+                    .append('\n')
+            }
+        }
+        return sb.toString().take(14000)
+    }
+
     /**
      * Episode lookup, built the same way as the movie lookup (read the page, follow its player links,
      * take the video link), plus checks the movie path does not need:
@@ -825,7 +879,7 @@ object Site {
      *  - a page that lists many videos is narrowed down to this episode,
      *  - every candidate is probed, so HTML / error answers go to the back of the list instead of
      *    being handed to ExoPlayer first,
-     *  - download.php with the episode's own query stays as the last resort.
+     *  - download.php with the episode's own query stays as the very last resort.
      */
     fun episodeCandidates(page: String, season0: Int = 0, ep0: Int = 0): List<String> {
         if (MEDIA_PATH_RE.containsMatchIn(page.substringBefore('?'))) return listOf(page)
@@ -834,6 +888,11 @@ object Site {
         val season = if (season0 > 0) season0 else (SEASON_LINK_RE.find("?$q")?.groupValues?.get(1)?.toIntOrNull() ?: 0)
         val epNo = if (ep0 > 0) ep0 else (EP_PARAM_RE.find("?$q")?.groupValues?.get(1)?.toIntOrNull() ?: 0)
         val script = page.substringBefore('?').substringAfterLast('/').lowercase()
+        val referer = if (page.startsWith("http")) page else "$BASE/"
+
+        val log = StringBuilder("episode page=$page\nseason=$season ep=$epNo\n")
+        dbgPageUrl = page
+        dbgHtml = ""
 
         val pending = ArrayDeque<String>()
         pending.addLast(page)
@@ -848,8 +907,20 @@ object Site {
             if (!visited.add(p)) continue
             inspected++
 
-            val html = fetchText(p) ?: continue
-            found.addAll(forEpisode(extractVideoUrls(html), season, epNo))
+            val html = fetchText(p)
+            if (html == null) {
+                log.append("could not read: $p\n")
+                continue
+            }
+            log.append("read: $p (${html.length} chars)\n")
+            if (dbgHtml.isEmpty()) {
+                dbgHtml = html
+                dbgPageUrl = p
+            }
+
+            val all = extractVideoUrls(html)
+            log.append("video links on it: ${all.size}\n")
+            found.addAll(forEpisode(all, season, epNo))
             if (found.isNotEmpty()) break
 
             for (link in innerLinks(html)) {
@@ -860,14 +931,17 @@ object Site {
         val good = ArrayList<String>()
         val bad = ArrayList<String>()
         for (u in found.take(6)) {
-            if (probe(u) == Probe.BAD) bad.add(u) else good.add(u)
+            val pr = probe(u, referer)
+            log.append("probe $pr  $u\n")
+            if (pr == Probe.BAD) bad.add(u) else good.add(u)
         }
 
         val out = LinkedHashSet<String>()
         out.addAll(good)
         out.addAll(found.drop(6))
-        if (q.isNotEmpty()) out.add("$BASE/download.php?$q")
         out.addAll(bad)
+        if (q.isNotEmpty()) out.add("$BASE/download.php?$q")
+        dbgLog = log.toString()
         return out.toList()
     }
 
