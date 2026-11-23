@@ -44,7 +44,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-class QItem(val key: String, val url: String, val title: String, val titleHref: String)
+class QItem(
+    val key: String,
+    val url: String,
+    val title: String,
+    val titleHref: String,
+    /** Fallback links tried in order if [url] fails (used for episodes). */
+    val alts: List<String> = emptyList()
+)
 
 private val SEASON_RE = Regex("season=(\\d+)")
 
@@ -148,11 +155,13 @@ fun DetailScreen(app: App, item: Item, onPlay: (List<QItem>, Int, Long) -> Unit)
         scope.launch {
             busy = true
             val chunk = eps.drop(from).take(4)   // this episode + the next 3, so auto-advance works
-            val urls = chunk.map { e -> async { runCatching { app.repo.episodeVideo(e.page) }.getOrNull() } }.awaitAll()
+            val cands = chunk.map { e ->
+                async { runCatching { app.repo.episodeCandidates(e.page) }.getOrDefault(emptyList()) }
+            }.awaitAll()
             val q = ArrayList<QItem>()
             for (i in chunk.indices) {
-                val u = urls[i]
-                if (u != null) q.add(QItem(chunk[i].page, u, item.title + " " + chunk[i].label, item.href))
+                val c = cands[i]
+                if (c.isNotEmpty()) q.add(QItem(chunk[i].page, c[0], item.title + " " + chunk[i].label, item.href, c.drop(1)))
             }
             busy = false
             if (q.isEmpty()) Toast.makeText(ctx, "Couldn't find the video for this episode", Toast.LENGTH_LONG).show()
