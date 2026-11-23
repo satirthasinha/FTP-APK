@@ -56,7 +56,7 @@ object Site {
     private const val EXT = "mkv|mp4|m3u8q|m3u8|avi|mov|webm|m4v"
 
     private val CARD_RE = Regex(
-        "<a\\s[^>]*?href=[\"']/?(view|watch|tview)\\.php\\?id=(\\d+)[^\"']*[\"'][^>]*>([\\s\\S]*?)</a>",
+        "<a\\s[^>]*?href=[\"'](?:https?://[^/\"']+)?/?(view|watch|tview)\\.php\\?(?:[^\"']*?&(?:amp;)?)?(?:series_id|id)=(\\d+)[^\"']*[\"'][^>]*>([\\s\\S]*?)</a>",
         RegexOption.IGNORE_CASE
     )
 
@@ -599,7 +599,7 @@ object Site {
                 ?: unescape(TAG_RE.replace(m.groupValues[2], " ")).trim().replace(Regex("\\s+"), " ")
 
             val page = if (href0.isEmpty() || href0.startsWith("#") || href0.startsWith("javascript", true)) {
-                "$BASE/watch.php?id=$seriesId&season=$season&ep=$epNo"
+                "$BASE/watch.php?series_id=$seriesId&season=$season&ep=$epNo"
             } else {
                 absolute(href0.substringBefore("#"))
             }
@@ -626,9 +626,9 @@ object Site {
 
         val candidates = ArrayList<String>()
         val known = seriesPage[id]
-        if (known != null) candidates.add("$known?id=$id")
-        for (p in SERIES_PAGES) candidates.add("$p?id=$id")
+        if (known != null) candidates.add("$known?series_id=$id")
         for (p in SERIES_PAGES) candidates.add("$p?series_id=$id")
+        for (p in SERIES_PAGES) candidates.add("$p?id=$id")
 
         for (p in candidates.distinct()) {
             var html = try {
@@ -646,7 +646,7 @@ object Site {
             // Page lists seasons but no episodes yet: ask for the default season explicitly.
             if (eps.isEmpty() && parsed.first.isNotEmpty()) {
                 html = try {
-                    Net.get("$BASE/${p.substringBefore('?')}?id=$id&season=$def")
+                    Net.get("$BASE/${p.substringBefore('?')}?series_id=$id&season=$def")
                 } catch (e: Exception) {
                     html
                 }
@@ -676,7 +676,7 @@ object Site {
 
         for (p in pages) {
             val html = try {
-                Net.get("$BASE/$p?id=$id&season=$season")
+                Net.get("$BASE/$p?series_id=$id&season=$season")
             } catch (e: Exception) {
                 continue
             }
