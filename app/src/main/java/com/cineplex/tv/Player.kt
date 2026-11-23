@@ -209,7 +209,8 @@ private fun PlayerContent(
                         .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
                     val msg = "Playback error: ${error.errorCodeName}\n" +
                         (if (http != null) "HTTP ${http.responseCode}\nURL: ${http.dataSpec.uri}\n" else "") +
-                        "Item: $orig"
+                        "Item: $orig\nPage: $id\nTried: " +
+                        (queue.firstOrNull { it.key == id }?.alts ?: emptyList()).joinToString("\n  ", prefix = "\n  ")
                     Log.e("CinePlexPlayer", msg)
                     val tv = android.widget.TextView(ctx).apply {
                         text = msg
