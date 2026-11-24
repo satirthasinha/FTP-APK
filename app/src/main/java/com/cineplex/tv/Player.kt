@@ -1,5 +1,7 @@
 package com.cineplex.tv
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.util.Log
 import android.view.View
 import androidx.activity.compose.BackHandler
@@ -7,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
@@ -18,6 +21,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.*
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -170,6 +176,18 @@ fun PlayerScreen(
 
     // Resolve the current entry in the background. Restarts whenever the entry changes.
     val appCtx = LocalContext.current
+    // Phones: playback is always landscape and fullscreen; browsing goes back to portrait afterwards.
+    DisposableEffect(Unit) {
+        val act = appCtx as? Activity
+        val ctl = act?.let { a -> WindowCompat.getInsetsController(a.window, a.window.decorView) }
+        act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        ctl?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        ctl?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose {
+            act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            ctl?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
     val ready by produceState<Ready?>(null, idx) {
         value = null
         val q = queue[idx]
@@ -431,7 +449,7 @@ private fun PlayerContent(
         }
         // Visible together with the player controls (and always while an error is shown).
         if (showBack || errorText != null) {
-            BackButton(Modifier.align(Alignment.TopStart).padding(16.dp)) { onExit() }
+            BackButton(Modifier.align(Alignment.TopStart).displayCutoutPadding().padding(16.dp)) { onExit() }
         }
     }
 }

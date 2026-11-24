@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -213,6 +215,36 @@ fun Rail(sections: List<Section>, current: String, onSelect: (String) -> Unit, m
     }
 }
 
+/** Phone navigation: icons + labels along the bottom edge. */
+@Composable
+fun BottomBar(sections: List<Section>, current: String, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier.fillMaxWidth().background(Color(0xF5101014)).padding(top = 2.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.SpaceAround
+    ) {
+        for (s in sections) {
+            val sel = s.id == current
+            val fg = if (sel) Color.White else Color(0xFF8A8A98)
+            Column(
+                Modifier.weight(1f).clickable { onSelect(s.id) }.padding(vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    Modifier.width(18.dp).height(3.dp).clip(RoundedCornerShape(2.dp))
+                        .background(if (sel) ACCENT else Color.Transparent)
+                )
+                Spacer(Modifier.height(5.dp))
+                RailIcon(s.id, fg, Modifier.size(22.dp))
+                Text(
+                    s.label, color = fg, fontSize = 10.sp, maxLines = 1,
+                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+    }
+}
+
 // ───────────────────────── Home: hero + shelves ─────────────────────────
 
 class Shelf(val title: String, val items: List<Item>, val frac: Map<String, Float> = emptyMap())
@@ -240,12 +272,12 @@ suspend fun remoteShelves(app: App): List<Shelf> {
 }
 
 @Composable
-fun Hero(item: Item?, meta: JSONObject?) {
-    Box(Modifier.fillMaxWidth().height(165.dp)) {
+fun Hero(item: Item?, meta: JSONObject?, compact: Boolean = false) {
+    Box(Modifier.fillMaxWidth().height(if (compact) 130.dp else 165.dp)) {
         val bg = meta?.optString("background").orEmpty()
         if (bg.isNotEmpty()) AsyncImage(
             model = bg, contentDescription = null, contentScale = ContentScale.Crop, alpha = 0.7f,
-            modifier = Modifier.align(Alignment.TopEnd).fillMaxWidth(0.78f).fillMaxHeight()
+            modifier = Modifier.align(Alignment.TopEnd).fillMaxWidth(if (compact) 1f else 0.78f).fillMaxHeight()
         )
         Box(Modifier.matchParentSize().background(Brush.horizontalGradient(listOf(BG, BG.copy(alpha = 0.88f), Color.Transparent))))
         Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent, BG))))
@@ -257,7 +289,7 @@ fun Hero(item: Item?, meta: JSONObject?) {
                 if (rating.isNotEmpty()) "IMDb $rating" else null
             ).joinToString("   ·   ")
             Column(
-                Modifier.align(Alignment.CenterStart).padding(start = 40.dp).widthIn(max = 520.dp),
+                Modifier.align(Alignment.CenterStart).padding(start = if (compact) 16.dp else 40.dp, end = 16.dp).widthIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
@@ -265,11 +297,11 @@ fun Hero(item: Item?, meta: JSONObject?) {
                     color = ACCENT, fontSize = 10.sp, fontWeight = FontWeight.Bold
                 )
                 Text(
-                    item.title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold,
+                    item.title, color = Color.White, fontSize = if (compact) 20.sp else 24.sp, fontWeight = FontWeight.ExtraBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 Text(info, color = Color(0xFFD0D0DA), fontSize = 12.sp)
-                Text(
+                if (!compact) Text(
                     meta?.optString("description").orEmpty(), color = Color(0xFFE6E6EE), fontSize = 12.sp,
                     maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
@@ -283,6 +315,8 @@ fun HomeRows(
     app: App, shelves: List<Shelf>, loading: Boolean, error: String?,
     restoreKey: String?, onRestored: () -> Unit, onOpen: (Item) -> Unit
 ) {
+    val compact = isCompact()
+    val hp = if (compact) 16.dp else 40.dp
     var focused by remember { mutableStateOf<Item?>(null) }
     var meta by remember { mutableStateOf<JSONObject?>(null) }
     val shown = focused ?: shelves.firstOrNull()?.items?.firstOrNull()
@@ -296,11 +330,11 @@ fun HomeRows(
         }
     }
     Column(Modifier.fillMaxSize().background(BG)) {
-        Hero(shown, meta)
-        if (error != null) Text(error, color = Color(0xFFFFB4A9), modifier = Modifier.padding(horizontal = 40.dp, vertical = 8.dp))
+        Hero(shown, meta, compact)
+        if (error != null) Text(error, color = Color(0xFFFFB4A9), modifier = Modifier.padding(horizontal = hp, vertical = 8.dp))
         else if (shelves.isEmpty()) Text(
             if (loading) "Loading…" else "Nothing to show yet.",
-            color = Color.Gray, modifier = Modifier.padding(40.dp)
+            color = Color.Gray, modifier = Modifier.padding(hp)
         )
         LazyColumn(
             modifier = Modifier.weight(1f),
@@ -312,16 +346,16 @@ fun HomeRows(
                 Column {
                     Text(
                         sh.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 40.dp, bottom = 10.dp)
+                        modifier = Modifier.padding(start = hp, bottom = 10.dp)
                     )
                     LazyRow(
-                        contentPadding = PaddingValues(horizontal = 40.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        contentPadding = PaddingValues(horizontal = hp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 16.dp)
                     ) {
                         items(sh.items.size) { i ->
                             val card = sh.items[i]
                             PosterCard(
-                                app, card, Modifier.width(140.dp),
+                                app, card, Modifier.width(if (compact) 112.dp else 140.dp),
                                 frac = sh.frac[card.href],
                                 restore = card.href == restoreKey,
                                 onRestored = onRestored,
@@ -431,6 +465,7 @@ private fun PickerOverlay(
     title: String, options: List<Opt>, selected: String,
     onPick: (String) -> Unit, onDismiss: () -> Unit
 ) {
+    val compact = isCompact()
     val st = rememberLazyGridState()
     val selIdx = options.indexOfFirst { o -> o.value == selected }.coerceAtLeast(0)
     val fr = remember { FocusRequester() }
@@ -444,13 +479,13 @@ private fun PickerOverlay(
         Modifier.fillMaxSize().background(Color(0xEB0B0B0F)).clickable(onClick = onDismiss),
         contentAlignment = Alignment.Center
     ) {
-        Column(Modifier.fillMaxWidth(0.62f)) {
+        Column(Modifier.fillMaxWidth(if (compact) 0.92f else 0.62f)) {
             Text(
                 title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 6.dp, bottom = 16.dp)
             )
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(130.dp), state = st,
+                columns = GridCells.Adaptive(if (compact) 100.dp else 130.dp), state = st,
                 modifier = Modifier.heightIn(max = 330.dp),
                 contentPadding = PaddingValues(6.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -489,6 +524,8 @@ fun GridScreen(
     emptyText: String, restoreKey: String?, onRestored: () -> Unit, onOpen: (Item) -> Unit,
     progressText: String? = null
 ) {
+    val compact = isCompact()
+    val hp = if (compact) 16.dp else 40.dp
     var picker by remember { mutableStateOf<String?>(null) }
 
     // Endless scrolling: when the last visible card is close to the end of the list, load the next pages.
@@ -502,32 +539,46 @@ fun GridScreen(
 
     Box(Modifier.fillMaxSize()) {
         Column(
-            Modifier.fillMaxSize().background(BG).padding(top = 24.dp)
+            Modifier.fillMaxSize().background(BG).padding(top = if (compact) 8.dp else 24.dp)
                 .then(if (picker != null) Modifier.focusProperties { canFocus = false } else Modifier)
         ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold)
-                Spacer(Modifier.weight(1f))
-                if (filter != null) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            val pills: @Composable () -> Unit = {
+                if (filter != null) {
                     Chip("Genre: " + (filter.genre.ifEmpty { "All" }) + "  ▾", selected = filter.genre.isNotEmpty()) { picker = "genre" }
                     Chip("Year: " + (if (filter.year > 0) filter.year.toString() else "All") + "  ▾", selected = filter.year > 0) { picker = "year" }
                     Chip("Sort: " + sortLabel(filter.sort) + "  ▾") { picker = "sort" }
                 }
             }
+            if (compact) {
+                Text(
+                    title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(horizontal = hp, vertical = 2.dp)
+                )
+                if (filter != null) Row(
+                    Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = hp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) { pills() }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = hp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold)
+                    Spacer(Modifier.weight(1f))
+                    if (filter != null) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { pills() }
+                }
+            }
             if (progressText != null) Text(
                 progressText, color = TEXT_DIM, fontSize = 13.sp,
-                modifier = Modifier.padding(start = 40.dp, top = 2.dp)
+                modifier = Modifier.padding(start = hp, top = 2.dp)
             )
             if (query != null) OutlinedTextField(
                 value = query, onValueChange = onQuery, singleLine = true, label = { Text("Search movies & series") },
                 shape = RoundedCornerShape(50),
-                modifier = Modifier.padding(horizontal = 40.dp, vertical = 8.dp).fillMaxWidth(0.5f)
+                modifier = Modifier.padding(horizontal = hp, vertical = 8.dp).fillMaxWidth(if (compact) 1f else 0.5f)
             )
             if (cats != null) LazyRow(
-                contentPadding = PaddingValues(horizontal = 40.dp, vertical = 10.dp),
+                contentPadding = PaddingValues(horizontal = hp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(cats.size + 1) { i ->
@@ -538,13 +589,14 @@ fun GridScreen(
             }
             if (list.isEmpty()) Text(
                 errorText ?: (if (loading || progressText != null) "Loading…" else emptyText),
-                color = if (errorText != null) Color(0xFFFFB4A9) else Color.Gray, modifier = Modifier.padding(40.dp)
+                color = if (errorText != null) Color(0xFFFFB4A9) else Color.Gray, modifier = Modifier.padding(hp)
             )
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(150.dp), state = gridState,
+                columns = GridCells.Adaptive(if (compact) 104.dp else 150.dp), state = gridState,
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(40.dp, 14.dp, 40.dp, 40.dp),
-                horizontalArrangement = Arrangement.spacedBy(20.dp), verticalArrangement = Arrangement.spacedBy(26.dp)
+                contentPadding = PaddingValues(hp, 14.dp, hp, 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 20.dp),
+                verticalArrangement = Arrangement.spacedBy(if (compact) 18.dp else 26.dp)
             ) {
                 gridItems(list, key = { it.href }) { card ->
                     PosterCard(
@@ -601,7 +653,7 @@ fun SettingsScreen(app: App) {
     var audio by remember { mutableStateOf(app.prefs.audio) }
     var subs by remember { mutableStateOf(app.prefs.subs) }
     Column(
-        Modifier.fillMaxSize().background(BG).padding(36.dp),
+        Modifier.fillMaxSize().background(BG).padding(if (isCompact()) 20.dp else 36.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text("Settings", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)

@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -196,17 +198,13 @@ fun DetailScreen(app: App, item: Item, onBack: () -> Unit, onPlay: (List<QItem>,
     ).joinToString("  ·  ")
     val favLabel = if (fav) "Remove from My List" else "Add to My List"
 
-    Box(Modifier.fillMaxSize().background(BG)) {
+    val compact = isCompact()
+    Box(Modifier.fillMaxSize().background(BG).safeDrawingPadding()) {
         if (bg.isNotEmpty()) AsyncImage(
             model = bg, contentDescription = null, contentScale = ContentScale.Crop,
             alpha = 0.28f, modifier = Modifier.fillMaxSize()
         )
-        Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp), horizontalArrangement = Arrangement.spacedBy(40.dp)) {
-            // Left column scrolls, and the buttons sit right under the title so they are always visible.
-            Column(
-                Modifier.weight(if (item.series) 0.42f else 0.7f).verticalScroll(leftScroll),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+        val leftBody: @Composable ColumnScope.() -> Unit = {
                 BackButton(onClick = onBack)
                 Text(item.title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                 Text(info, color = Color.LightGray, fontSize = 15.sp)
@@ -261,29 +259,53 @@ fun DetailScreen(app: App, item: Item, onBack: () -> Unit, onPlay: (List<QItem>,
                 if (genres.isNotEmpty()) Text(genres, color = Color.Gray, fontSize = 14.sp)
                 Text(m?.optString("description").orEmpty(), color = Color.White, fontSize = 15.sp, maxLines = 8, overflow = TextOverflow.Ellipsis)
                 if (m != null) Text("Details: Cinemeta", color = Color.DarkGray, fontSize = 11.sp)
-            }
-            if (item.series) Column(Modifier.weight(0.58f)) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 12.dp)) {
-                    items(seasons.size) { i ->
-                        Btn(seasons[i].name, primary = i == season) { season = i }
-                    }
+        }
+        val seasonBar: @Composable () -> Unit = {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(bottom = 12.dp)) {
+                items(seasons.size) { i ->
+                    Btn(seasons[i].name, primary = i == season) { season = i }
                 }
-                if (!epsLoaded && seasons.isNotEmpty()) Text("Loading episodes…", color = Color.Gray)
-                if (epsLoaded && eps.isEmpty() && !failed) Text("No episodes found for this season.", color = Color.Gray)
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(eps.size) { i ->
-                        val e = eps[i]
-                        val p = prog[e.page]
-                        val watched = p != null && p.first == 0L && p.second > 0
-                        val resumeAt = if (p != null && p.first > 0) p.first else 0L
-                        val label = (if (watched) "✓ " else "▶ ") + e.label + "  " + e.name.take(44) +
-                            (if (resumeAt > 0) "   (resume " + fmtTime(resumeAt) + ")" else "")
-                        FocusBox(Modifier.fillMaxWidth(), onClick = { if (!busy) playEpisodes(i, resumeAt) }) {
-                            Text(
-                                label, color = Color.White, fontSize = 16.sp, maxLines = 1,
-                                modifier = Modifier.fillMaxWidth().background(CARD).padding(14.dp)
-                            )
-                        }
+            }
+            if (!epsLoaded && seasons.isNotEmpty()) Text("Loading episodes…", color = Color.Gray)
+            if (epsLoaded && eps.isEmpty() && !failed) Text("No episodes found for this season.", color = Color.Gray)
+        }
+        val epRow: @Composable (Int) -> Unit = { i ->
+            val e = eps[i]
+            val p = prog[e.page]
+            val watched = p != null && p.first == 0L && p.second > 0
+            val resumeAt = if (p != null && p.first > 0) p.first else 0L
+            val label = (if (watched) "✓ " else "▶ ") + e.label + "  " + e.name.take(44) +
+                (if (resumeAt > 0) "   (resume " + fmtTime(resumeAt) + ")" else "")
+            FocusBox(Modifier.fillMaxWidth(), onClick = { if (!busy) playEpisodes(i, resumeAt) }) {
+                Text(
+                    label, color = Color.White, fontSize = 16.sp, maxLines = 1,
+                    modifier = Modifier.fillMaxWidth().background(CARD).padding(14.dp)
+                )
+            }
+        }
+        if (compact) {
+            // Phone / portrait: one scrolling column — info and buttons first, episodes underneath.
+            Column(
+                Modifier.fillMaxSize().verticalScroll(leftScroll).padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                leftBody()
+                if (item.series) {
+                    seasonBar()
+                    for (i in eps.indices) epRow(i)
+                }
+            }
+        } else {
+            Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp), horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+                // Left column scrolls, and the buttons sit right under the title so they are always visible.
+                Column(
+                    Modifier.weight(if (item.series) 0.42f else 0.7f).verticalScroll(leftScroll),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) { leftBody() }
+                if (item.series) Column(Modifier.weight(0.58f)) {
+                    seasonBar()
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(eps.size) { i -> epRow(i) }
                     }
                 }
             }

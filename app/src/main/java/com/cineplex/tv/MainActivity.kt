@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -185,8 +186,9 @@ fun Root(app: App) {
 
     val s = stack.lastOrNull()
     if (s == null) {
-        Box(Modifier.fillMaxSize().background(BG)) {
-            Box(Modifier.fillMaxSize().padding(start = 76.dp)) {
+        val compact = isCompact()
+        Box(Modifier.fillMaxSize().background(BG).safeDrawingPadding()) {
+            Box(Modifier.fillMaxSize().padding(start = if (compact) 0.dp else 76.dp, bottom = if (compact) 62.dp else 0.dp)) {
                 val open: (Item) -> Unit = { picked ->
                     restoreKey = picked.href
                     stack.add(Screen.Detail(picked))
@@ -231,7 +233,9 @@ fun Root(app: App) {
                     )
                 }
             }
-            Rail(sections, section, { id -> if (id != section) maxPages = 4; section = id }, Modifier.align(Alignment.CenterStart))
+            val pick: (String) -> Unit = { id -> if (id != section) maxPages = 4; section = id }
+            if (compact) BottomBar(sections, section, pick, Modifier.align(Alignment.BottomCenter))
+            else Rail(sections, section, pick, Modifier.align(Alignment.CenterStart))
         }
     } else if (s is Screen.Detail) {
         DetailScreen(

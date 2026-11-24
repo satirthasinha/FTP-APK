@@ -26,6 +26,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** Phones in portrait (narrow screens) get a compact, touch-first layout. */
+@Composable
+fun isCompact(): Boolean = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 600
+
 val BG = Color(0xFF0B0B0F)
 val CARD = Color(0xFF1B1B22)
 val SURFACE = Color(0xFF272731)
